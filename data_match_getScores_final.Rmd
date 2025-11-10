@@ -1,0 +1,443 @@
+---
+title: "data_match_getScores_final"
+output: html_document
+date: "2025-09-18"
+---
+
+# get set up
+```{r}
+library(tidyverse)
+library(ggstance) ## position_dodgev for vertical dodging
+theme_set(theme_classic())
+library(ggpubr)
+library(data.table)
+
+# function to rbind but create dummy columns if don't match
+## source: https://amywhiteheadresearch.wordpress.com/2013/05/13/combining-dataframes-when-the-columns-dont-match/
+rbind.all.columns <- function(x, y) {
+ 
+    x.diff <- setdiff(colnames(x), colnames(y))
+    y.diff <- setdiff(colnames(y), colnames(x))
+ 
+    x[, c(as.character(y.diff))] <- NA
+ 
+    y[, c(as.character(x.diff))] <- NA
+ 
+    return(rbind(x, y))
+}
+```
+
+
+## calculate scale values
+```{r}
+# read in data
+### dataframe read in here consists of rows with data for each student, and 
+### columns with pre and post responses for each survey question
+matched.dat <- read.csv("data/ALL_MATCHED_toF2024.csv")
+
+# get numeric values for BFNE scale
+## 2024 checked and question numbers in code all matched up to survey
+matched.dat <- matched.dat %>% 
+  mutate(BFNE_1_pre = as.numeric(substr(Q8_1_pre, 0, 1))) %>% ## get numeric vals for pre BFNE scale
+  mutate(BFNE_2_pre = as.numeric(substr(Q8_2_pre, 0, 1))) %>% 
+  mutate(BFNE_3_pre = as.numeric(substr(Q8_3_pre, 0, 1))) %>% 
+  mutate(BFNE_4_pre = as.numeric(substr(Q8_4_pre, 0, 1))) %>% 
+  mutate(BFNE_5_pre = as.numeric(substr(Q8_5_pre, 0, 1))) %>% 
+  mutate(BFNE_6_pre = as.numeric(substr(Q8_6_pre, 0, 1))) %>% 
+  mutate(BFNE_7_pre = as.numeric(substr(Q10_1_pre, 0, 1))) %>% 
+  mutate(BFNE_8_pre = as.numeric(substr(Q10_2_pre, 0, 1))) %>% 
+  mutate(BFNE_9_pre = as.numeric(substr(Q10_3_pre, 0, 1))) %>% 
+  mutate(BFNE_10_pre = as.numeric(substr(Q10_4_pre, 0, 1))) %>% 
+  mutate(BFNE_11_pre = as.numeric(substr(Q10_5_pre, 0, 1))) %>% 
+  mutate(BFNE_12_pre = as.numeric(substr(Q10_6_pre, 0, 1))) %>% 
+  mutate(BFNE_1_post = as.numeric(substr(Q8_1_post, 0, 1))) %>% ## get numeric vals for post BFNE scale
+  mutate(BFNE_2_post = as.numeric(substr(Q8_2_post, 0, 1))) %>% 
+  mutate(BFNE_3_post = as.numeric(substr(Q8_3_post, 0, 1))) %>% 
+  mutate(BFNE_4_post = as.numeric(substr(Q8_4_post, 0, 1))) %>% 
+  mutate(BFNE_5_post = as.numeric(substr(Q8_5_post, 0, 1))) %>% 
+  mutate(BFNE_6_post = as.numeric(substr(Q8_6_post, 0, 1))) %>% 
+  mutate(BFNE_7_post = as.numeric(substr(Q10_1_post, 0, 1))) %>% 
+  mutate(BFNE_8_post = as.numeric(substr(Q10_2_post, 0, 1))) %>% 
+  mutate(BFNE_9_post = as.numeric(substr(Q10_3_post, 0, 1))) %>% 
+  mutate(BFNE_10_post = as.numeric(substr(Q10_4_post, 0, 1))) %>% 
+  mutate(BFNE_11_post = as.numeric(substr(Q10_5_post, 0, 1))) %>%
+  mutate(BFNE_12_post = as.numeric(substr(Q10_6_post, 0, 1))) %>%
+  mutate(BFNE_2_pre_rev = (BFNE_2_pre - 6)*(-1)) %>% ## reverse code pre q's 2, 4, 7, 10
+  mutate(BFNE_4_pre_rev = (BFNE_4_pre - 6)*(-1)) %>%
+  mutate(BFNE_7_pre_rev = (BFNE_7_pre - 6)*(-1)) %>%
+  mutate(BFNE_10_pre_rev = (BFNE_10_pre - 6)*(-1)) %>%
+  mutate(BFNE_2_post_rev = (BFNE_2_post - 6)*(-1)) %>% ## reverse code post q's 2, 4, 7, 10
+  mutate(BFNE_4_post_rev = (BFNE_4_post - 6)*(-1)) %>%
+  mutate(BFNE_7_post_rev = (BFNE_7_post - 6)*(-1)) %>%
+  mutate(BFNE_10_post_rev = (BFNE_10_post - 6)*(-1)) %>% 
+  mutate(BFNE_sum_pre = BFNE_1_pre +
+                        BFNE_2_pre_rev +
+                        BFNE_3_pre +
+                        BFNE_4_pre_rev +
+                        BFNE_5_pre +
+                        BFNE_6_pre +
+                        BFNE_7_pre_rev +
+                        BFNE_8_pre +
+                        BFNE_9_pre +
+                        BFNE_10_pre_rev +
+                        BFNE_11_pre +
+                        BFNE_12_pre) %>% ## get pre BFNE scale sums
+  mutate(BFNE_sum_post = BFNE_1_post +
+                        BFNE_2_post_rev +
+                        BFNE_3_post +
+                        BFNE_4_post_rev +
+                        BFNE_5_post +
+                        BFNE_6_post +
+                        BFNE_7_post_rev +
+                        BFNE_8_post +
+                        BFNE_9_post +
+                        BFNE_10_post_rev +
+                        BFNE_11_post +
+                        BFNE_12_post) %>%  ## get post BFNE scale sums
+  mutate(BFNE_sum_change = BFNE_sum_post - BFNE_sum_pre) ## get change vals
+
+# get numeric values for self efficacy scale
+## 2023 checked and question numbers in code all matched up to survey
+matched.dat <- matched.dat %>% 
+  mutate(SelfEff_1_pre = as.numeric(case_when(Q21_1_pre == "Strongly disagree" ~ 1, ## get numeric vals for self efficacy pre q's 
+                                   Q21_1_pre == "Disagree" ~ 2,
+                                   Q21_1_pre == "Somewhat disagree" ~ 3,
+                                   Q21_1_pre == "Somewhat agree" ~ 4,
+                                   Q21_1_pre == "Agree" ~ 5,
+                                   Q21_1_pre == "Strongly agree" ~ 6))) %>% 
+  mutate(SelfEff_2_pre = as.numeric(case_when(Q21_2_pre == "Strongly disagree" ~ 1, 
+                                   Q21_2_pre == "Disagree" ~ 2,
+                                   Q21_2_pre == "Somewhat disagree" ~ 3,
+                                   Q21_2_pre == "Somewhat agree" ~ 4,
+                                   Q21_2_pre == "Agree" ~ 5,
+                                   Q21_2_pre == "Strongly agree" ~ 6))) %>% 
+  mutate(SelfEff_3_pre = as.numeric(case_when(Q21_3_pre == "Strongly disagree" ~ 1, 
+                                   Q21_3_pre == "Disagree" ~ 2,
+                                   Q21_3_pre == "Somewhat disagree" ~ 3,
+                                   Q21_3_pre == "Somewhat agree" ~ 4,
+                                   Q21_3_pre == "Agree" ~ 5,
+                                   Q21_3_pre == "Strongly agree" ~ 6))) %>% 
+  mutate(SelfEff_4_pre = as.numeric(case_when(Q21_4_pre == "Strongly disagree" ~ 1, 
+                                   Q21_4_pre == "Disagree" ~ 2,
+                                   Q21_4_pre == "Somewhat disagree" ~ 3,
+                                   Q21_4_pre == "Somewhat agree" ~ 4,
+                                   Q21_4_pre == "Agree" ~ 5,
+                                   Q21_4_pre == "Strongly agree" ~ 6))) %>% 
+  mutate(SelfEff_5_pre = as.numeric(case_when(Q21_5_pre == "Strongly disagree" ~ 1, 
+                                   Q21_5_pre == "Disagree" ~ 2,
+                                   Q21_5_pre == "Somewhat disagree" ~ 3,
+                                   Q21_5_pre == "Somewhat agree" ~ 4,
+                                   Q21_5_pre == "Agree" ~ 5,
+                                   Q21_5_pre == "Strongly agree" ~ 6))) %>% 
+  mutate(SelfEff_6_pre = as.numeric(case_when(Q22_1_pre == "Strongly disagree" ~ 1, 
+                                   Q22_1_pre == "Disagree" ~ 2,
+                                   Q22_1_pre == "Somewhat disagree" ~ 3,
+                                   Q22_1_pre == "Somewhat agree" ~ 4,
+                                   Q22_1_pre == "Agree" ~ 5,
+                                   Q22_1_pre == "Strongly agree" ~ 6))) %>% 
+  mutate(SelfEff_7_pre = as.numeric(case_when(Q22_2_pre == "Strongly disagree" ~ 1, 
+                                   Q22_2_pre == "Disagree" ~ 2,
+                                   Q22_2_pre == "Somewhat disagree" ~ 3,
+                                   Q22_2_pre == "Somewhat agree" ~ 4,
+                                   Q22_2_pre == "Agree" ~ 5, 
+                                   Q22_2_pre == "Strongly agree" ~ 6))) %>% 
+  mutate(SelfEff_8_pre = as.numeric(case_when(Q22_3_pre == "Strongly disagree" ~ 1, 
+                                   Q22_3_pre == "Disagree" ~ 2,
+                                   Q22_3_pre == "Somewhat disagree" ~ 3,
+                                   Q22_3_pre == "Somewhat agree" ~ 4,
+                                   Q22_3_pre == "Agree" ~ 5, 
+                                   Q22_3_pre == "Strongly agree" ~ 6))) %>% 
+  mutate(SelfEff_9_pre = as.numeric(case_when(Q22_4_pre == "Strongly disagree" ~ 1, 
+                                   Q22_4_pre == "Disagree" ~ 2,
+                                   Q22_4_pre == "Somewhat disagree" ~ 3,
+                                   Q22_4_pre == "Somewhat agree" ~ 4,
+                                   Q22_4_pre == "Agree" ~ 5, 
+                                   Q22_4_pre == "Strongly agree" ~ 6))) %>% 
+  mutate(SelfEff_7_pre_rev = (SelfEff_7_pre - 7)*(-1)) %>% ## reverse code pre q's 7, 8, 9
+  mutate(SelfEff_8_pre_rev = (SelfEff_8_pre - 7)*(-1)) %>%
+  mutate(SelfEff_9_pre_rev = (SelfEff_9_pre - 7)*(-1)) %>% 
+  mutate(SelfEff_1_post = as.numeric(case_when(Q21_1_post == "Strongly disagree" ~ 1, ## get numeric vals for self efficacy post q's 
+                                   Q21_1_post == "Disagree" ~ 2,
+                                   Q21_1_post == "Somewhat disagree" ~ 3,
+                                   Q21_1_post == "Somewhat agree" ~ 4,
+                                   Q21_1_post == "Agree" ~ 5, 
+                                   Q21_1_post == "Strongly agree" ~ 6))) %>%  
+  mutate(SelfEff_2_post = as.numeric(case_when(Q21_2_post == "Strongly disagree" ~ 1, 
+                                   Q21_2_post == "Disagree" ~ 2,
+                                   Q21_2_post == "Somewhat disagree" ~ 3,
+                                   Q21_2_post == "Somewhat agree" ~ 4,
+                                   Q21_2_post == "Agree" ~ 5, 
+                                   Q21_2_post == "Strongly agree" ~ 6))) %>% 
+  mutate(SelfEff_3_post = as.numeric(case_when(Q21_3_post == "Strongly disagree" ~ 1, 
+                                   Q21_3_post == "Disagree" ~ 2,
+                                   Q21_3_post == "Somewhat disagree" ~ 3,
+                                   Q21_3_post == "Somewhat agree" ~ 4,
+                                   Q21_3_post == "Agree" ~ 5, 
+                                   Q21_3_post == "Strongly agree" ~ 6))) %>%  
+  mutate(SelfEff_4_post = as.numeric(case_when(Q21_4_post == "Strongly disagree" ~ 1, 
+                                   Q21_4_post == "Disagree" ~ 2,
+                                   Q21_4_post == "Somewhat disagree" ~ 3,
+                                   Q21_4_post == "Somewhat agree" ~ 4,
+                                   Q21_4_post == "Agree" ~ 5, 
+                                   Q21_4_post == "Strongly agree" ~ 6))) %>% 
+  mutate(SelfEff_5_post = as.numeric(case_when(Q21_5_post == "Strongly disagree" ~ 1, 
+                                   Q21_5_post == "Disagree" ~ 2,
+                                   Q21_5_post == "Somewhat disagree" ~ 3,
+                                   Q21_5_post == "Somewhat agree" ~ 4,
+                                   Q21_5_post == "Agree" ~ 5, 
+                                   Q21_5_post == "Strongly agree" ~ 6))) %>%  
+  mutate(SelfEff_6_post = as.numeric(case_when(Q22_1_post == "Strongly disagree" ~ 1, 
+                                   Q22_1_post == "Disagree" ~ 2,
+                                   Q22_1_post == "Somewhat disagree" ~ 3,
+                                   Q22_1_post == "Somewhat agree" ~ 4,
+                                   Q22_1_post == "Agree" ~ 5, 
+                                   Q22_1_post == "Strongly agree" ~ 6))) %>%  
+  mutate(SelfEff_7_post = as.numeric(case_when(Q22_2_post == "Strongly disagree" ~ 1, 
+                                   Q22_2_post == "Disagree" ~ 2,
+                                   Q22_2_post == "Somewhat disagree" ~ 3,
+                                   Q22_2_post == "Somewhat agree" ~ 4,
+                                   Q22_2_post == "Agree" ~ 5, 
+                                   Q22_2_post == "Strongly agree" ~ 6))) %>% 
+  mutate(SelfEff_8_post = as.numeric(case_when(Q22_3_post == "Strongly disagree" ~ 1, 
+                                   Q22_3_post == "Disagree" ~ 2,
+                                   Q22_3_post == "Somewhat disagree" ~ 3,
+                                   Q22_3_post == "Somewhat agree" ~ 4,
+                                   Q22_3_post == "Agree" ~ 5, 
+                                   Q22_3_post == "Strongly agree" ~ 6))) %>% 
+  mutate(SelfEff_9_post = as.numeric(case_when(Q22_4_post == "Strongly disagree" ~ 1, 
+                                   Q22_4_post == "Disagree" ~ 2,
+                                   Q22_4_post == "Somewhat disagree" ~ 3,
+                                   Q22_4_post == "Somewhat agree" ~ 4,
+                                   Q22_4_post == "Agree" ~ 5, 
+                                   Q22_4_post == "Strongly agree" ~ 6))) %>% 
+  mutate(SelfEff_7_post_rev = (SelfEff_7_post - 7)*(-1)) %>% ## reverse code post q's 7, 8, 9
+  mutate(SelfEff_8_post_rev = (SelfEff_8_post - 7)*(-1)) %>%
+  mutate(SelfEff_9_post_rev = (SelfEff_9_post - 7)*(-1)) %>% 
+  mutate(SelfEff_sum_pre = SelfEff_1_pre + ## get pre self eff scale sums
+                        SelfEff_2_pre +
+                        SelfEff_3_pre +
+                        SelfEff_4_pre +
+                        SelfEff_5_pre +
+                        SelfEff_6_pre +
+                        SelfEff_7_pre_rev +
+                        SelfEff_8_pre_rev +
+                        SelfEff_9_pre_rev) %>% 
+  mutate(SelfEff_sum_post = SelfEff_1_post + ## get post self eff scale sums
+                        SelfEff_2_post +
+                        SelfEff_3_post +
+                        SelfEff_4_post +
+                        SelfEff_5_post +
+                        SelfEff_6_post +
+                        SelfEff_7_post_rev +
+                        SelfEff_8_post_rev +
+                        SelfEff_9_post_rev) %>% 
+  mutate(SelfEff_sum_change = SelfEff_sum_post - SelfEff_sum_pre) ## get change vals
+  mutate(SelfEff_sum_pre = SelfEff_1_pre + ## get pre self eff scale sums
+                        SelfEff_2_pre +
+                        SelfEff_3_pre +
+                        SelfEff_4_pre +
+                        SelfEff_5_pre +
+                        SelfEff_6_pre +
+                        SelfEff_7_pre_rev +
+                        SelfEff_8_pre_rev +
+                        SelfEff_9_pre_rev) %>% 
+  mutate(SelfEff_int_sum_pre = SelfEff_1_pre + ## get pre self eff scale sums - interest
+                        SelfEff_2_pre +
+                        SelfEff_3_pre) %>% 
+  mutate(SelfEff_util_sum_pre = SelfEff_4_pre + ## get pre self eff scale sums - utility
+                        SelfEff_5_pre +
+                        SelfEff_6_pre) %>% 
+  mutate(SelfEff_cost_sum_pre = SelfEff_7_pre_rev + ## get pre self eff scale sums - cost
+                        SelfEff_8_pre_rev +
+                        SelfEff_9_pre_rev) %>% 
+  mutate(SelfEff_sum_post = SelfEff_1_post + ## get post self eff scale sums
+                        SelfEff_2_post +
+                        SelfEff_3_post +
+                        SelfEff_4_post +
+                        SelfEff_5_post +
+                        SelfEff_6_post +
+                        SelfEff_7_post_rev +
+                        SelfEff_8_post_rev +
+                        SelfEff_9_post_rev) %>% 
+  mutate(SelfEff_int_sum_post = SelfEff_1_post + ## get post self eff scale sums - interest
+                        SelfEff_2_post +
+                        SelfEff_3_post) %>% 
+  mutate(SelfEff_util_sum_post = SelfEff_4_post + ## get post self eff scale sums - utility
+                        SelfEff_5_post +
+                        SelfEff_6_post) %>% 
+  mutate(SelfEff_cost_sum_post = SelfEff_7_post_rev + ## get post self eff scale sums - cost
+                        SelfEff_8_post_rev +
+                        SelfEff_9_post_rev) %>%
+  mutate(SelfEff_sum_change = SelfEff_sum_post - SelfEff_sum_pre) %>% ## get change vals
+  mutate(SelfEff_int_sum_change = SelfEff_int_sum_post - SelfEff_int_sum_pre) %>%  
+  mutate(SelfEff_util_sum_change = SelfEff_util_sum_post - SelfEff_util_sum_pre) %>% 
+  mutate(SelfEff_cost_sum_change = SelfEff_cost_sum_post - SelfEff_cost_sum_pre)
+  
+
+# get numbers for sense of belonging scale
+## 2023 checked and question numbers in code all matched up to survey
+matched.dat <- matched.dat %>% 
+  mutate(BelongQuant_1_pre = as.numeric(case_when(Q16_1_pre == "Strongly disagree" ~ 1, ## get numeric vals for sense of belonging pre q's 
+                                   Q16_1_pre == "Disagree" ~ 2,
+                                   Q16_1_pre == "Somewhat disagree" ~ 3,
+                                   Q16_1_pre == "Somewhat agree" ~ 4,
+                                   Q16_1_pre == "Agree" ~ 5,
+                                   Q16_1_pre == "Strongly agree" ~ 6))) %>% 
+  mutate(BelongQuant_2_pre = as.numeric(case_when(Q16_2_pre == "Strongly disagree" ~ 1, 
+                                   Q16_2_pre == "Disagree" ~ 2,
+                                   Q16_2_pre == "Somewhat disagree" ~ 3,
+                                   Q16_2_pre == "Somewhat agree" ~ 4,
+                                   Q16_2_pre == "Agree" ~ 5,
+                                   Q16_2_pre == "Strongly agree" ~ 6))) %>% 
+  mutate(BelongQuant_3_pre = as.numeric(case_when(Q16_3_pre == "Strongly disagree" ~ 1,
+                                   Q16_3_pre == "Disagree" ~ 2,
+                                   Q16_3_pre == "Somewhat disagree" ~ 3,
+                                   Q16_3_pre == "Somewhat agree" ~ 4,
+                                   Q16_3_pre == "Agree" ~ 5,
+                                   Q16_3_pre == "Strongly agree" ~ 6))) %>% 
+  mutate(BelongQuant_3_pre_rev = (BelongQuant_3_pre - 7)*(-1)) %>% ## reverse code quantitative sense of belonging pre q 3
+  mutate(BelongClass_1_pre = as.numeric(case_when(Q16_4_pre == "Strongly disagree" ~ 1, 
+                                   Q16_4_pre == "Disagree" ~ 2,
+                                   Q16_4_pre == "Somewhat disagree" ~ 3,
+                                   Q16_4_pre == "Somewhat agree" ~ 4,
+                                   Q16_4_pre == "Agree" ~ 5,
+                                   Q16_4_pre == "Strongly agree" ~ 6))) %>% 
+  mutate(BelongClass_2_pre = as.numeric(case_when(Q16_5_pre == "Strongly disagree" ~ 1, 
+                                   Q16_5_pre == "Disagree" ~ 2,
+                                   Q16_5_pre == "Somewhat disagree" ~ 3,
+                                   Q16_5_pre == "Somewhat agree" ~ 4,
+                                   Q16_5_pre == "Agree" ~ 5,
+                                   Q16_5_pre == "Strongly agree" ~ 6))) %>% 
+  mutate(BelongClass_3_pre = as.numeric(case_when(Q16_6_pre == "Strongly disagree" ~ 1, 
+                                   Q16_6_pre == "Disagree" ~ 2,
+                                   Q16_6_pre == "Somewhat disagree" ~ 3,
+                                   Q16_6_pre == "Somewhat agree" ~ 4,
+                                   Q16_6_pre == "Agree" ~ 5,
+                                   Q16_6_pre == "Strongly agree" ~ 6))) %>% 
+  mutate(BelongClass_2_pre_rev = (BelongClass_2_pre - 7)*(-1)) %>% ## reverse code class sense of belonging pre q 2
+  mutate(BelongQuant_1_post = as.numeric(case_when(Q16_1_post == "Strongly disagree" ~ 1, ## get numeric vals for sense of belonging post q's 
+                                   Q16_1_post == "Disagree" ~ 2,
+                                   Q16_1_post == "Somewhat disagree" ~ 3,
+                                   Q16_1_post == "Somewhat agree" ~ 4,
+                                   Q16_1_post == "Agree" ~ 5,
+                                   Q16_1_post == "Strongly agree" ~ 6))) %>% 
+  mutate(BelongQuant_2_post = as.numeric(case_when(Q16_2_post == "Strongly disagree" ~ 1, 
+                                   Q16_2_post == "Disagree" ~ 2,
+                                   Q16_2_post == "Somewhat disagree" ~ 3,
+                                   Q16_2_post == "Somewhat agree" ~ 4,
+                                   Q16_2_post == "Agree" ~ 5,
+                                   Q16_2_post == "Strongly agree" ~ 6))) %>% 
+  mutate(BelongQuant_3_post = as.numeric(case_when(Q16_3_post == "Strongly disagree" ~ 1,
+                                   Q16_3_post == "Disagree" ~ 2,
+                                   Q16_3_post == "Somewhat disagree" ~ 3,
+                                   Q16_3_post == "Somewhat agree" ~ 4,
+                                   Q16_3_post == "Agree" ~ 5,
+                                   Q16_3_post == "Strongly agree" ~ 6))) %>% 
+  mutate(BelongQuant_3_post_rev = (BelongQuant_3_post - 7)*(-1)) %>% ## reverse code quantitative sense of belonging post q 3
+  mutate(BelongClass_1_post = as.numeric(case_when(Q16_4_post == "Strongly disagree" ~ 1, 
+                                   Q16_4_post == "Disagree" ~ 2,
+                                   Q16_4_post == "Somewhat disagree" ~ 3,
+                                   Q16_4_post == "Somewhat agree" ~ 4,
+                                   Q16_4_post == "Agree" ~ 5,
+                                   Q16_4_post == "Strongly agree" ~ 6))) %>% 
+  mutate(BelongClass_2_post = as.numeric(case_when(Q16_5_post == "Strongly disagree" ~ 1, 
+                                   Q16_5_post == "Disagree" ~ 2,
+                                   Q16_5_post == "Somewhat disagree" ~ 3,
+                                   Q16_5_post == "Somewhat agree" ~ 4,
+                                   Q16_5_post == "Agree" ~ 5,
+                                   Q16_5_post == "Strongly agree" ~ 6))) %>% 
+  mutate(BelongClass_3_post = as.numeric(case_when(Q16_6_post == "Strongly disagree" ~ 1, 
+                                   Q16_6_post == "Disagree" ~ 2,
+                                   Q16_6_post == "Somewhat disagree" ~ 3,
+                                   Q16_6_post == "Somewhat agree" ~ 4,
+                                   Q16_6_post == "Agree" ~ 5,
+                                   Q16_6_post == "Strongly agree" ~ 6))) %>% 
+  mutate(BelongClass_2_post_rev = (BelongClass_2_post - 7)*(-1)) %>% ## reverse code class sense of belonging post q 2
+  mutate(BelongAll_sum_pre = BelongQuant_1_pre + ## get pre sense of belonging scale sum for all q's
+                        BelongQuant_2_pre +
+                        BelongQuant_3_pre_rev +
+                        BelongClass_1_pre +
+                        BelongClass_2_pre_rev +
+                        BelongClass_3_pre) %>% 
+  mutate(BelongQuant_sum_pre = BelongQuant_1_pre + ## get pre quantitative sense of belonging scale sum
+                        BelongQuant_2_pre +
+                        BelongQuant_3_pre_rev) %>% 
+  mutate(BelongClass_sum_pre = BelongClass_1_pre + ## get pre class sense of belonging scale sum
+                        BelongClass_2_pre_rev +
+                        BelongClass_3_pre) %>% 
+  mutate(BelongAll_sum_post = BelongQuant_1_post + ## get post sense of belonging scale sum for all q's
+                        BelongQuant_2_post +
+                        BelongQuant_3_post_rev +
+                        BelongClass_1_post +
+                        BelongClass_2_post_rev +
+                        BelongClass_3_post) %>% 
+  mutate(BelongQuant_sum_post = BelongQuant_1_post + ## get post quantitative sense of belonging scale sum
+                        BelongQuant_2_post +
+                        BelongQuant_3_post_rev) %>% 
+  mutate(BelongClass_sum_post = BelongClass_1_post + ## get post class sense of belonging scale sum
+                        BelongClass_2_post_rev +
+                        BelongClass_3_post) %>%
+  mutate(BelongAll_sum_change = BelongAll_sum_post - BelongAll_sum_pre) %>%  ## get change vals
+  mutate(BelongQuant_sum_change = BelongQuant_sum_post - BelongQuant_sum_pre) %>% 
+  mutate(BelongClass_sum_change = BelongClass_sum_post - BelongClass_sum_pre)
+
+# get numeric values for coping scales
+matched.dat <- matched.dat %>% 
+  mutate(CopeActive_1_pre = as.numeric(substr(Q12_1_pre, 0, 1))) %>%  ## get numeric vals for pre coping scale
+  mutate(CopeActive_2_pre = as.numeric(substr(Q12_3_pre, 0, 1))) %>%
+  mutate(CopeEmo_1_pre = as.numeric(substr(Q12_2_pre, 0, 1))) %>%
+  mutate(CopeEmo_2_pre = as.numeric(substr(Q14_3_pre, 0, 1))) %>%
+  mutate(CopeInstrum_1_pre = as.numeric(substr(Q12_4_pre, 0, 1))) %>%
+  mutate(CopeInstrum_2_pre = as.numeric(substr(Q15_2_pre, 0, 1))) %>%
+  mutate(CopePosRef_1_pre = as.numeric(substr(Q14_1_pre, 0, 1))) %>%
+  mutate(CopePosRef_2_pre = as.numeric(substr(Q15_1_pre, 0, 1))) %>%
+  mutate(CopePlan_1_pre = as.numeric(substr(Q14_2_pre, 0, 1))) %>%
+  mutate(CopePlan_2_pre = as.numeric(substr(Q15_3_pre, 0, 1))) %>%
+  mutate(CopeActive_sum_pre = CopeActive_1_pre + CopeActive_2_pre) %>% ## get sums for pre coping scale
+  mutate(CopeEmo_sum_pre = CopeEmo_1_pre + CopeEmo_2_pre) %>%
+  mutate(CopeInstrum_sum_pre = CopeInstrum_1_pre + CopeInstrum_2_pre) %>%
+  mutate(CopePosRef_sum_pre = CopePosRef_1_pre + CopePosRef_2_pre) %>%
+  mutate(CopePlan_sum_pre = CopePlan_1_pre + CopePlan_2_pre) %>%
+  
+  mutate(CopeActive_1_post = as.numeric(substr(Q12_1_post, 0, 1))) %>%  ## get numeric vals for post coping scale
+  mutate(CopeActive_2_post = as.numeric(substr(Q12_3_post, 0, 1))) %>%
+  mutate(CopeEmo_1_post = as.numeric(substr(Q12_2_post, 0, 1))) %>%
+  mutate(CopeEmo_2_post = as.numeric(substr(Q14_3_post, 0, 1))) %>%
+  mutate(CopeInstrum_1_post = as.numeric(substr(Q12_4_post, 0, 1))) %>%
+  mutate(CopeInstrum_2_post = as.numeric(substr(Q15_2_post, 0, 1))) %>%
+  mutate(CopePosRef_1_post = as.numeric(substr(Q14_1_post, 0, 1))) %>%
+  mutate(CopePosRef_2_post = as.numeric(substr(Q15_1_post, 0, 1))) %>%
+  mutate(CopePlan_1_post = as.numeric(substr(Q14_2_post, 0, 1))) %>%
+  mutate(CopePlan_2_post = as.numeric(substr(Q15_3_post, 0, 1))) %>%
+  mutate(CopeActive_sum_post = CopeActive_1_post + CopeActive_2_post) %>% ## get sums for post coping scale
+  mutate(CopeEmo_sum_post = CopeEmo_1_post + CopeEmo_2_post) %>%
+  mutate(CopeInstrum_sum_post = CopeInstrum_1_post + CopeInstrum_2_post) %>% 
+  mutate(CopePosRef_sum_post = CopePosRef_1_post + CopePosRef_2_post) %>%
+  mutate(CopePlan_sum_post = CopePlan_1_post + CopePlan_2_post) %>%
+  mutate(CopeActive_sum_change = CopeActive_sum_post - CopeActive_sum_pre) %>% ## get coping scale change values
+  mutate(CopeEmo_sum_change = CopeEmo_sum_post - CopeEmo_sum_pre) %>%
+  mutate(CopeInstrum_sum_change = CopeInstrum_sum_post - CopeInstrum_sum_pre) %>% 
+  mutate(CopePosRef_sum_change = CopePosRef_sum_post - CopePosRef_sum_pre) %>%
+  mutate(CopePlan_sum_change = CopePlan_sum_post - CopePlan_sum_pre) 
+
+# get overall coping scores
+matched.dat <- matched.dat %>% 
+  mutate(CopeOverall_pre = CopeActive_sum_pre + CopeEmo_sum_pre + 
+           CopeInstrum_sum_pre + CopePosRef_sum_pre +
+           CopePlan_sum_pre) %>% ## all coping measures
+  mutate(CopeOverall_post = CopeActive_sum_post + CopeEmo_sum_post + 
+           CopeInstrum_sum_post + CopePosRef_sum_post +
+           CopePlan_sum_post) %>% ## all coping measures
+  mutate(CopeOverall_sum_change = CopeOverall_post - CopeOverall_pre)
+
+# check - all good
+# matched.dat %>%
+#   select(CopeInstrum_1_pre, CopeInstrum_2_pre,
+#          Q12_4_pre, Q15_2_pre,
+#          CopeInstrum_1_post, CopeInstrum_2_post,
+#          Q12_4_post, Q15_2_post,
+#          CopeInstrum_sum_change)
+
+# write.csv(matched.dat, "data/ALL_MATCHED_toF2024.csv")
+```
+

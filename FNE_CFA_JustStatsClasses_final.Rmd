@@ -1,0 +1,276 @@
+---
+title: "FNE_CFA_JustStatsClasses_final"
+author: "Cody Pham"
+date: "2025-09-18"
+output: html_document
+---
+
+# load packages and data
+```{r}
+library(tidyverse)
+library(lavaan)
+library(psych)
+
+# load dataset with all data and clean up
+### dataframe read in here consists of rows with data for each student, and 
+### columns with pre and post scores for each survey scale, along with columns with grades and demographic data
+matched.all.dat <- read.csv("Data/ALL_MATCHED_toF2024_6-2-25.csv") 
+# write.csv(matched.all.dat, "Data/ALL_MATCHED_toF2024_6-6-25.csv")
+
+# selfeff scales messed up for WFC103 in 2022 so remove those
+matched.all.dat <- matched.all.dat %>% 
+  mutate(SelfEff_sum_change = ifelse(quarter == "F2022",
+                                     NA,
+                                     SelfEff_sum_change)) %>% 
+    mutate(SelfEff_sum_pre = ifelse(quarter == "F2022",
+                                     NA,
+                                     SelfEff_sum_change)) %>% 
+    mutate(SelfEff_sum_post = ifelse(quarter == "F2022",
+                                     NA,
+                                     SelfEff_sum_change))
+```
+
+# define model for cfa (group questions together how intended originally)
+```{r}
+# set model
+## group questions with constructs
+
+## pre questions
+model.pre <- 'BFNE_pre =~ BFNE_1_pre +
+                          BFNE_2_pre_rev +
+                          BFNE_3_pre +
+                          BFNE_4_pre_rev +
+                          BFNE_5_pre +
+                          BFNE_6_pre +
+                          BFNE_7_pre_rev +
+                          BFNE_8_pre +
+                          BFNE_9_pre +
+                          BFNE_10_pre_rev +
+                          BFNE_11_pre +
+                          BFNE_12_pre
+              BelongAll_pre =~ BelongQuant_1_pre + 
+                               BelongQuant_2_pre +
+                               BelongQuant_3_pre_rev +
+                               BelongClass_1_pre +
+                               BelongClass_2_pre_rev +
+                               BelongClass_3_pre
+              SelfEff_int_pre =~ SelfEff_1_pre + 
+                                 SelfEff_2_pre +
+                                 SelfEff_3_pre
+              SelfEff_util_pre =~ SelfEff_4_pre +
+                                  SelfEff_5_pre +
+                                  SelfEff_6_pre
+              SelfEff_cost_pre =~ SelfEff_7_pre_rev +
+                                  SelfEff_8_pre_rev +
+                                  SelfEff_9_pre_rev
+              CopeInstrum_pre =~ CopeInstrum_1_pre + 
+                                 CopeInstrum_2_pre
+            '
+```
+
+# run the CFA for pre questions
+```{r}
+# run CFA
+cfa.pre <- cfa(model.pre,
+           data = matched.all.dat,
+           estimator ="MLR", 
+           missing = "ML")
+
+# get analysis summary
+summary(cfa.pre,
+        fit.measures = T,
+        standardized = T)
+```
+
+# respecify model for cfa (remove BFNE_4_pre_rev that didn't fit well)
+```{r}
+# set model
+## group questions with constructs
+
+## pre questions
+model.pre.respec <- 'BFNE_pre =~ BFNE_1_pre +
+                          BFNE_2_pre_rev +
+                          BFNE_3_pre +
+                          # BFNE_4_pre_rev + ## removed this one bc poor fit
+                          BFNE_5_pre +
+                          BFNE_6_pre +
+                          BFNE_7_pre_rev +
+                          BFNE_8_pre +
+                          BFNE_9_pre +
+                          BFNE_10_pre_rev +
+                          BFNE_11_pre +
+                          BFNE_12_pre
+              BelongAll_pre =~ BelongQuant_1_pre + 
+                               BelongQuant_2_pre +
+                               BelongQuant_3_pre_rev +
+                               BelongClass_1_pre +
+                               BelongClass_2_pre_rev + ## removing this one didnt change fit
+                               BelongClass_3_pre
+              SelfEff_int_pre =~ SelfEff_1_pre + 
+                                 SelfEff_2_pre +
+                                 SelfEff_3_pre
+              SelfEff_util_pre =~ SelfEff_4_pre +
+                                  SelfEff_5_pre +
+                                  SelfEff_6_pre
+              SelfEff_cost_pre =~ SelfEff_7_pre_rev +
+                                  SelfEff_8_pre_rev +
+                                  SelfEff_9_pre_rev
+              CopeInstrum_pre =~ CopeInstrum_1_pre + 
+                                 CopeInstrum_2_pre
+            '
+```
+
+# run the respecified CFA for pre questions
+```{r}
+# run respecified CFA
+cfa.pre.respec <- cfa(model.pre.respec,
+           data = matched.all.dat,
+           estimator ="MLR", 
+           missing = "ML")
+
+# get analysis summary
+summary(cfa.pre.respec,
+        fit.measures = T,
+        standardized = T)
+
+# check significance of improvement
+anova(cfa.pre, cfa.pre.respec) # fit is significantly better
+```
+
+# try freeing model constraints to get better fit
+```{r}
+# check modification indices
+## print modifications that would lead to largest fit improvements
+## epc: expected value change
+## sepc.all: expected standardized value change
+### want to see top sepc.all for modification that would make largest improvement 
+mi <- modificationIndices(cfa.pre.respec) # check modification indices
+head(mi[order(mi$sepc.all, decreasing = TRUE), ])
+
+### top suggestion is to free error covariance between SelfEff_4_pre and SelfEff_5_pre
+### ~~ symbolizes covariance in lavaan syntax
+```
+
+# respecify freed constraint model for cfa (free error covariance between SelfEff_4_pre and SelfEff_5_pre)
+```{r}
+# set model
+## group questions with constructs
+
+## pre questions
+model.pre.respec.free <- 'BFNE_pre =~ BFNE_1_pre +
+                          BFNE_2_pre_rev +
+                          BFNE_3_pre +
+                          # BFNE_4_pre_rev + ## removed this one bc poor fit
+                          BFNE_5_pre +
+                          BFNE_6_pre +
+                          BFNE_7_pre_rev +
+                          BFNE_8_pre +
+                          BFNE_9_pre +
+                          BFNE_10_pre_rev +
+                          BFNE_11_pre +
+                          BFNE_12_pre
+                          BelongAll_pre =~ BelongQuant_1_pre + 
+                                           BelongQuant_2_pre +
+                                           BelongQuant_3_pre_rev +
+                                           BelongClass_1_pre +
+                                           BelongClass_2_pre_rev + ## removing this one didnt change fit
+                                           BelongClass_3_pre
+                          SelfEff_int_pre =~ SelfEff_1_pre + 
+                                             SelfEff_2_pre +
+                                             SelfEff_3_pre
+                          SelfEff_util_pre =~ SelfEff_4_pre +
+                                              SelfEff_5_pre +
+                                              SelfEff_6_pre
+                          SelfEff_cost_pre =~ SelfEff_7_pre_rev +
+                                              SelfEff_8_pre_rev +
+                                              SelfEff_9_pre_rev
+                          CopeInstrum_pre =~ CopeInstrum_1_pre + 
+                                             CopeInstrum_2_pre
+                          
+                          ## specify freed error covariances
+                          SelfEff_4_pre ~~ SelfEff_5_pre
+            '
+```
+
+# run the freed constraint CFA for pre questions
+```{r}
+# run respecified CFA
+cfa.pre.respec.free <- cfa(model.pre.respec.free,
+           data = matched.all.dat,
+           estimator ="MLR", 
+           missing = "ML")
+
+# get analysis summary
+summary(cfa.pre.respec.free,
+        fit.measures = T,
+        standardized = T)
+
+# check significance of improvement
+anova(cfa.pre.respec, cfa.pre.respec.free) # fit is significantly better
+
+# Not much change in global fit indices after freeing constraint 
+# (significantly improved fit but likely due to sample size)
+```
+
+# internal consistency checks
+
+## internal consistency check - BFNE
+```{r}
+psych::alpha(matched.all.dat %>% 
+        select(BFNE_1_pre,
+                BFNE_2_pre_rev,
+                BFNE_3_pre,
+                # BFNE_4_pre_rev, ## removed this one bc poor fit from cfa (but doesn't affect alpha at all)
+                BFNE_5_pre,
+                BFNE_6_pre,
+                BFNE_7_pre_rev,
+                BFNE_8_pre,
+                BFNE_9_pre,
+                BFNE_10_pre_rev,
+                BFNE_11_pre,
+                BFNE_12_pre))
+
+```
+
+## internal consistency check - Belonging
+```{r}
+psych::alpha(matched.all.dat %>% 
+              select(BelongQuant_1_pre, 
+                     BelongQuant_2_pre,
+                     BelongQuant_3_pre_rev,
+                     BelongClass_1_pre,
+                     BelongClass_2_pre_rev, 
+                     BelongClass_3_pre))
+```
+
+## internal consistency check - SelfEff interest
+```{r}
+psych::alpha(matched.all.dat %>% 
+              select(SelfEff_1_pre, 
+                     SelfEff_2_pre,
+                     SelfEff_3_pre))
+```
+
+## internal consistency check - SelfEff utility
+```{r}
+psych::alpha(matched.all.dat %>% 
+              select(SelfEff_4_pre,
+                      SelfEff_5_pre,
+                      SelfEff_6_pre))
+```
+
+## internal consistency check - SelfEff interest cost
+```{r}
+psych::alpha(matched.all.dat %>% 
+              select(SelfEff_7_pre_rev,
+                      SelfEff_8_pre_rev,
+                      SelfEff_9_pre_rev))
+```
+
+## internal consistency check - CopeInstrum
+```{r}
+psych::alpha(matched.all.dat %>% 
+              select(CopeInstrum_1_pre, 
+                      CopeInstrum_2_pre))
+```
+
