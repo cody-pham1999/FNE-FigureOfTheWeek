@@ -1,1 +1,8 @@
-Code 
+Code associated with fear of negative evaluation and creative figure exploration study for calculating survey scale values, running a confirmatory factor analysis, and running Bayesian regressions.
+
+File "data_match_getScores_final.Rmd" reads in raw pre and post survey data and calculates survey scale scores.
+
+File "FNE_CFA_JustStatsClasses_final.Rmd" runs the confirmatory factor analysis to assess reliability of each survey scale.
+
+File "BayesMods_final.Rmd" runs the Bayesian regression models to assess the effects of the treatment and control, and runs all model diagnostics.
+
