@@ -1,0 +1,2392 @@
+---
+title: "BayesMods_final"
+author: "Cody Pham"
+date: "2025-09-18"
+output: html_document
+---
+
+# the code below is to run mods with lowincome, POC, firstgen, and gender groups
+
+
+# get set up
+```{r}
+library(tidyverse)
+library(ggstance) ## position_dodgev for vertical dodging
+theme_set(theme_bw())
+library(ggpubr)
+library(data.table)
+library(sjPlot) ## for EDA plots
+```
+
+
+
+
+# read in data
+```{r}
+# pre.raw.dat <- read.csv("Data/WFC103_PRE_F2022_FNE.csv")
+# post.raw.dat <- read.csv("Data/WFC103_POST_F2022_FNE.csv")
+# grades.dat <- read.csv("Data/WFC103_Overall_grades_F2022.csv")
+# qual.dat <-  read.csv("Data/WFC103_EmergentCoding_CP.csv")
+# matched.2022.dat <- read.csv("Data/WFC103_MATCHED_F2022.csv")
+# 
+# matched.2023.dat <- read.csv("Data/ALL_MATCHED_F2023.csv")
+
+# read in joined dataset for all years
+### dataframe read in here consists of rows with data for each student, and 
+### columns with pre and post scores for each survey scale, along with columns with grades and demographic data
+matched.all.dat <- read.csv("Data/ALL_MATCHED_toF2024_6-20-25.csv") 
+# write.csv(matched.all.dat, "Data/ALL_MATCHED_toF2024_6-20-25.csv")
+
+# selfeff scales messed up for WFC103 in 2022 so remove those
+matched.all.dat <- matched.all.dat %>% 
+  mutate(SelfEff_sum_change = ifelse(quarter == "F2022",
+                                     NA,
+                                     SelfEff_sum_change)) %>% 
+    mutate(SelfEff_sum_pre = ifelse(quarter == "F2022",
+                                     NA,
+                                     SelfEff_sum_pre)) %>% 
+    mutate(SelfEff_sum_post = ifelse(quarter == "F2022",
+                                     NA,
+                                     SelfEff_sum_post))
+
+# recalculate BFNE score with bad fit item removed
+matched.all.dat <- matched.all.dat %>% 
+  mutate(BFNE_sum_pre = BFNE_1_pre +
+                          BFNE_2_pre_rev +
+                          BFNE_3_pre +
+                          # BFNE_4_pre_rev + ## removed this one bc poor fit
+                          BFNE_5_pre +
+                          BFNE_6_pre +
+                          BFNE_7_pre_rev +
+                          BFNE_8_pre +
+                          BFNE_9_pre +
+                          BFNE_10_pre_rev +
+                          BFNE_11_pre +
+                          BFNE_12_pre,
+         BFNE_sum_post = BFNE_1_post +
+                          BFNE_2_post_rev +
+                          BFNE_3_post +
+                          # BFNE_4_post_rev + ## removed this one bc poor fit
+                          BFNE_5_post +
+                          BFNE_6_post +
+                          BFNE_7_post_rev +
+                          BFNE_8_post +
+                          BFNE_9_post +
+                          BFNE_10_post_rev +
+                          BFNE_11_post +
+                          BFNE_12_post,
+         BFNE_sum_change = BFNE_sum_post - BFNE_sum_pre)
+
+# get grades in terms of percentage points
+matched.all.dat$TotalPercent_init <- matched.all.dat$TotalPercent_init*100
+```
+
+# get datasets ready
+## filter for data with known group affiliations
+```{r}
+# income group data
+matched.lowincome.dat <- matched.all.dat %>% 
+  filter(LowIncome %in% c("Yes", "No"))
+
+# poc group data
+matched.poc.dat <- matched.all.dat %>% 
+  filter(URM %in% c("Yes", "No"))
+
+# first/continuing gen group data
+matched.gen.dat <- matched.all.dat %>% 
+  filter(FirstGen %in% c("Yes", "No"))
+
+# gender data (male/all other categories - female, trans, gender nonconforming)
+matched.gender.dat <- matched.all.dat %>% 
+  filter(!is.na(Gender)) %>% 
+  filter(Gender != "Not Reported") %>% # just keep rows with gender data
+  mutate(GenderTwoCat = ifelse(Gender == "Male", "Male", "FemaleOther")) %>% 
+  filter(GenderTwoCat %in% c("Male", "FemaleOther"))
+## set base group as female/other
+matched.gender.dat$GenderTwoCat <- factor(matched.gender.dat$GenderTwoCat, levels=c('Male', 'FemaleOther'))
+
+# all groups data
+matched.allgroups.dat <- matched.all.dat %>% 
+  filter(LowIncome %in% c("Yes", "No"),
+         URM %in% c("Yes", "No"),
+         FirstGen %in% c("Yes", "No"))
+
+# all groups data with gender
+matched.allgroups.gender.dat <- matched.all.dat %>% 
+  filter(LowIncome %in% c("Yes", "No"),
+         URM %in% c("Yes", "No"),
+         FirstGen %in% c("Yes", "No")) %>% 
+  filter(!is.na(Gender)) %>% 
+  filter(Gender != "Not Reported") %>% # just keep rows with gender data
+  mutate(GenderTwoCat = ifelse(Gender == "Male", "Male", "FemaleOther")) %>% 
+  filter(GenderTwoCat %in% c("Male", "FemaleOther"))
+## set base group as female/other
+matched.allgroups.gender.dat$GenderTwoCat <- factor(matched.allgroups.gender.dat$GenderTwoCat, levels=c('Male', 'FemaleOther'))
+```
+
+# set up bayes model priors
+```{r}
+library(brms)
+library(BayesFactor)
+
+# get sds for all measures
+sd(matched.all.dat$BFNE_sum_change, na.rm=T)
+sd(matched.all.dat$BelongAll_sum_change, na.rm=T)
+sd(matched.all.dat$SelfEff_int_sum_change, na.rm=T)
+sd(matched.all.dat$SelfEff_util_sum_change, na.rm=T)
+sd(matched.all.dat$SelfEff_cost_sum_change, na.rm=T)
+sd(matched.all.dat$CopeInstrum_sum_change, na.rm=T)
+sd(matched.all.dat$TotalPercent_init, na.rm=T)
+
+
+## set seed
+SEED=402
+
+# define the prior distributions
+mod_priors_fne <- c(# intercept
+                prior(normal(0, 5.685539), class = Intercept), 
+                # weakly informative priors (slightly conservative)
+                ## source: https://michael-franke.github.io/intro-data-analysis/logistic-regression.html
+                #   for `class = 'b'` (i.e., all slopes)
+                prior(normal(0, 5.685539),  class = 'b')
+                # random effects
+                ## default for random effects for now bc recommended here
+                ## https://m-clark.github.io/mixed-models-with-R/bayesian.html#priors
+                ### default is half-student-t bc values can only be positive
+                # error SD
+                # prior(normal(0, 2), class = sigma))
+                )
+
+mod_priors_belong <- c(# intercept
+                prior(normal(0, 3.519305), class = Intercept), 
+                # weakly informative priors (slightly conservative)
+                ## source: https://michael-franke.github.io/intro-data-analysis/logistic-regression.html
+                #   for `class = 'b'` (i.e., all slopes)
+                prior(normal(0, 3.519305),  class = 'b')
+                # random effects
+                ## default for random effects for now bc recommended here
+                ## https://m-clark.github.io/mixed-models-with-R/bayesian.html#priors
+                ### default is half-student-t bc values can only be positive
+                # error SD
+                # prior(normal(0, 2), class = sigma))
+                )
+
+mod_priors_selfeffint <- c(# intercept
+                prior(normal(0, 2.420451), class = Intercept), 
+                # weakly informative priors (slightly conservative)
+                ## source: https://michael-franke.github.io/intro-data-analysis/logistic-regression.html
+                #   for `class = 'b'` (i.e., all slopes)
+                prior(normal(0, 2.420451),  class = 'b')
+                # random effects
+                ## default for random effects for now bc recommended here
+                ## https://m-clark.github.io/mixed-models-with-R/bayesian.html#priors
+                ### default is half-student-t bc values can only be positive
+                # error SD
+                # prior(normal(0, 2), class = sigma))
+                )
+
+mod_priors_selfeffutil <- c(# intercept
+                prior(normal(0, 2.238384), class = Intercept), 
+                # weakly informative priors (slightly conservative)
+                ## source: https://michael-franke.github.io/intro-data-analysis/logistic-regression.html
+                #   for `class = 'b'` (i.e., all slopes)
+                prior(normal(0, 2.238384),  class = 'b')
+                # random effects
+                ## default for random effects for now bc recommended here
+                ## https://m-clark.github.io/mixed-models-with-R/bayesian.html#priors
+                ### default is half-student-t bc values can only be positive
+                # error SD
+                # prior(normal(0, 2), class = sigma))
+                )
+
+mod_priors_selfeffcost <- c(# intercept
+                prior(normal(0, 3.111871), class = Intercept), 
+                # weakly informative priors (slightly conservative)
+                ## source: https://michael-franke.github.io/intro-data-analysis/logistic-regression.html
+                #   for `class = 'b'` (i.e., all slopes)
+                prior(normal(0, 3.111871),  class = 'b')
+                # random effects
+                ## default for random effects for now bc recommended here
+                ## https://m-clark.github.io/mixed-models-with-R/bayesian.html#priors
+                ### default is half-student-t bc values can only be positive
+                # error SD
+                # prior(normal(0, 2), class = sigma))
+                )
+
+mod_priors_copeinstrum <- c(# intercept
+                prior(normal(0, 1.833122), class = Intercept), 
+                # weakly informative priors (slightly conservative)
+                ## source: https://michael-franke.github.io/intro-data-analysis/logistic-regression.html
+                #   for `class = 'b'` (i.e., all slopes)
+                prior(normal(0, 1.833122),  class = 'b')
+                # random effects
+                ## default for random effects for now bc recommended here
+                ## https://m-clark.github.io/mixed-models-with-R/bayesian.html#priors
+                ### default is half-student-t bc values can only be positive
+                # error SD
+                # prior(normal(0, 2), class = sigma))
+                )
+
+mod_priors_grade <- c(# intercept
+                prior(normal(90, 5.429978), class = Intercept), 
+                # weakly informative priors (slightly conservative)
+                ## source: https://michael-franke.github.io/intro-data-analysis/logistic-regression.html
+                #   for `class = 'b'` (i.e., all slopes)
+                prior(normal(0, 5.429978),  class = 'b')
+                # random effects
+                ## default for random effects for now bc recommended here
+                ## https://m-clark.github.io/mixed-models-with-R/bayesian.html#priors
+                ### default is half-student-t bc values can only be positive
+                # error SD
+                # prior(normal(0, 2), class = sigma))
+                )
+```
+
+
+
+
+# look at all model outputs by measure
+```{r}
+# fne change differences between income groups bayes mod
+fne.income.fourdemog.brms <- readRDS ("models/fne.income.fourdemog.brms.rds")
+summary(fne.income.fourdemog.brms)
+
+# fne change differences between poc groups bayes mod
+fne.poc.fourdemog.brms <- readRDS ("models/fne.poc.fourdemog.brms.rds")
+summary(fne.poc.fourdemog.brms)
+
+# fne change differences between firstgen groups bayes mod
+fne.gen.fourdemog.brms <- readRDS ("models/fne.gen.fourdemog.brms.rds")
+summary(fne.gen.fourdemog.brms)
+
+# fne change differences between gender groups bayes mod
+fne.gender.fourdemog.brms <- readRDS ("models/fne.gender.fourdemog.brms.rds")
+summary(fne.gender.fourdemog.brms)
+
+fne.overall.fourdemog.brms <- readRDS("models/fne.overall.fourdemog.brms.rds")
+summary(fne.overall.fourdemog.brms)
+
+#-------------------------------------------------------------------------------
+
+
+# sense of belonging change differences between income groups bayes mod
+belong.income.fourdemog.brms <- readRDS("models/belong.income.fourdemog.brms.rds")
+summary(belong.income.fourdemog.brms)
+
+# sense of belonging change differences between income groups bayes mod
+belong.poc.fourdemog.brms <- readRDS("models/belong.poc.fourdemog.brms.rds")
+summary(belong.poc.fourdemog.brms)
+
+# sense of belonging change differences between income groups bayes mod
+belong.gen.fourdemog.brms <- readRDS("models/belong.gen.fourdemog.brms.rds")
+summary(belong.gen.fourdemog.brms)
+
+# sense of belonging change differences between income groups bayes mod
+belong.gender.fourdemog.brms <- readRDS("models/belong.gender.fourdemog.brms.rds")
+summary(belong.gender.fourdemog.brms)
+
+belong.overall.fourdemog.brms <- readRDS("models/belong.overall.fourdemog.brms.rds")
+summary(belong.overall.fourdemog.brms)
+
+#-------------------------------------------------------------------------------
+
+
+# instrumental support seeking change differences between income groups bayes mod
+copeinstrum.income.fourdemog.brms <- readRDS("models/copeinstrum.income.fourdemog.brms.rds")
+summary(copeinstrum.income.fourdemog.brms)
+
+# instrumental support seeking change differences between income groups bayes mod
+copeinstrum.poc.fourdemog.brms <- readRDS("models/copeinstrum.poc.fourdemog.brms.rds")
+summary(copeinstrum.poc.fourdemog.brms)
+
+# instrumental support seeking change differences between income groups bayes mod
+copeinstrum.gen.fourdemog.brms <- readRDS("models/copeinstrum.gen.fourdemog.brms.rds")
+summary(copeinstrum.gen.fourdemog.brms)
+
+# instrumental support seeking change differences between income groups bayes mod
+copeinstrum.gender.fourdemog.brms <- readRDS("models/copeinstrum.gender.fourdemog.brms.rds")
+summary(copeinstrum.gender.fourdemog.brms)
+
+copeinstrum.overall.fourdemog.brms <- readRDS("models/copeinstrum.overall.fourdemog.brms.rds")
+summary(copeinstrum.overall.fourdemog.brms)
+
+
+#-------------------------------------------------------------------------------
+
+
+# self efficacy - interest differences between income groups bayes mod
+selfeffint.income.fourdemog.brms <- readRDS("models/selfeffint.income.fourdemog.brms.rds")
+summary(selfeffint.income.fourdemog.brms)
+
+# self efficacy - utility differences between income groups bayes mod
+selfeffutil.income.fourdemog.brms <- readRDS("models/selfeffutil.income.fourdemog.brms.rds")
+summary(selfeffutil.income.fourdemog.brms)
+
+# self efficacy - cost differences between income groups bayes mod
+selfeffcost.income.fourdemog.brms <- readRDS("models/selfeffcost.income.fourdemog.brms.rds")
+summary(selfeffcost.income.fourdemog.brms)
+
+#-------------------------------------------------------------------------------
+
+# self efficacy - interest differences between income groups bayes mod
+selfeffint.poc.fourdemog.brms <- readRDS("models/selfeffint.urm.fourdemog.brms.rds")
+summary(selfeffint.poc.fourdemog.brms)
+
+# self efficacy - utility differences between income groups bayes mod
+selfeffutil.poc.fourdemog.brms <- readRDS("models/selfeffutil.urm.fourdemog.brms.rds")
+summary(selfeffutil.poc.fourdemog.brms)
+
+# self efficacy - cost differences between income groups bayes mod
+selfeffcost.poc.fourdemog.brms <- readRDS("models/selfeffcost.urm.fourdemog.brms.rds")
+summary(selfeffcost.poc.fourdemog.brms)
+
+#-------------------------------------------------------------------------------
+
+# self efficacy - interest differences between income groups bayes mod
+selfeffint.gen.fourdemog.brms <- readRDS("models/selfeffint.gen.fourdemog.brms.rds")
+summary(selfeffint.gen.fourdemog.brms)
+
+# self efficacy - utility differences between income groups bayes mod
+selfeffutil.gen.fourdemog.brms <- readRDS("models/selfeffutil.gen.fourdemog.brms.rds")
+summary(selfeffutil.gen.fourdemog.brms)
+
+# self efficacy - cost differences between income groups bayes mod
+selfeffcost.gen.fourdemog.brms <- readRDS("models/selfeffcost.gen.fourdemog.brms.rds")
+summary(selfeffcost.gen.fourdemog.brms)
+
+#-------------------------------------------------------------------------------
+
+# self efficacy - interest differences between income groups bayes mod
+selfeffint.gender.fourdemog.brms <- readRDS("models/selfeffint.gender.fourdemog.brms.rds")
+summary(selfeffint.gender.fourdemog.brms)
+
+# self efficacy - utility differences between income groups bayes mod
+selfeffutil.gender.fourdemog.brms <- readRDS("models/selfeffutil.gender.fourdemog.brms.rds")
+summary(selfeffutil.gender.fourdemog.brms)
+
+# self efficacy - cost differences between income groups bayes mod
+selfeffcost.gender.fourdemog.brms <- readRDS("models/selfeffcost.gender.fourdemog.brms.rds")
+summary(selfeffcost.gender.fourdemog.brms)
+
+
+#-------------------------------------------------------------------------------
+# grades models
+grade.income.brms <- readRDS ("models/grade.income.fourdemog.brms.toF2024.rds")
+summary(grade.income.brms)
+
+grade.poc.brms <- readRDS ("models/grade.poc.fourdemog.brms.toF2024.rds")
+summary(grade.poc.brms)
+
+grade.gen.brms <- readRDS ("models/grade.gen.fourdemog.brms.toF2024.rds")
+summary(grade.gen.brms)
+
+grade.gender.brms <- readRDS ("models/grade.gender.fourdemog.brms.toF2024.rds")
+summary(grade.gender.brms)
+
+```
+
+# look at all model outputs by group
+```{r}
+
+# self efficacy - interest differences between income groups bayes mod
+selfeffint.income.fourdemog.brms <- readRDS("models/selfeffint.income.fourdemog.brms.rds")
+summary(selfeffint.income.fourdemog.brms)
+
+# self efficacy - utility differences between income groups bayes mod
+selfeffutil.income.fourdemog.brms <- readRDS("models/selfeffutil.income.fourdemog.brms.rds")
+summary(selfeffutil.income.fourdemog.brms)
+
+# self efficacy - cost differences between income groups bayes mod
+selfeffcost.income.fourdemog.brms <- readRDS("models/selfeffcost.income.fourdemog.brms.rds")
+summary(selfeffcost.income.fourdemog.brms)
+
+#-------------------------------------------------------------------------------
+
+# self efficacy - interest differences between income groups bayes mod
+selfeffint.poc.fourdemog.brms <- readRDS("models/selfeffint.urm.fourdemog.brms.rds")
+summary(selfeffint.poc.fourdemog.brms)
+
+# self efficacy - utility differences between income groups bayes mod
+selfeffutil.poc.fourdemog.brms <- readRDS("models/selfeffutil.urm.fourdemog.brms.rds")
+summary(selfeffutil.poc.fourdemog.brms)
+
+# self efficacy - cost differences between income groups bayes mod
+selfeffcost.poc.fourdemog.brms <- readRDS("models/selfeffcost.urm.fourdemog.brms.rds")
+summary(selfeffcost.poc.fourdemog.brms)
+
+#-------------------------------------------------------------------------------
+
+# self efficacy - interest differences between income groups bayes mod
+selfeffint.gen.fourdemog.brms <- readRDS("models/selfeffint.gen.fourdemog.brms.rds")
+summary(selfeffint.gen.fourdemog.brms)
+
+# self efficacy - utility differences between income groups bayes mod
+selfeffutil.gen.fourdemog.brms <- readRDS("models/selfeffutil.gen.fourdemog.brms.rds")
+summary(selfeffutil.gen.fourdemog.brms)
+
+# self efficacy - cost differences between income groups bayes mod
+selfeffcost.gen.fourdemog.brms <- readRDS("models/selfeffcost.gen.fourdemog.brms.rds")
+summary(selfeffcost.gen.fourdemog.brms)
+
+#-------------------------------------------------------------------------------
+
+# self efficacy - interest differences between income groups bayes mod
+selfeffint.gender.fourdemog.brms <- readRDS("models/selfeffint.gender.fourdemog.brms.rds")
+summary(selfeffint.gender.fourdemog.brms)
+
+# self efficacy - utility differences between income groups bayes mod
+selfeffutil.gender.fourdemog.brms <- readRDS("models/selfeffutil.gender.fourdemog.brms.rds")
+summary(selfeffutil.gender.fourdemog.brms)
+
+# self efficacy - cost differences between income groups bayes mod
+selfeffcost.gender.fourdemog.brms <- readRDS("models/selfeffcost.gender.fourdemog.brms.rds")
+summary(selfeffcost.gender.fourdemog.brms)
+
+```
+
+
+
+
+### LowIncome bayes test mods for effect of treatment on affective measures across income groups WITH PRE MEASURE CONTROL AND FOUR DEMOGRAPHIC GROUPS
+```{r}
+# mods controlling for other group affiliations
+
+# fne change differences between income groups bayes mod
+fne.income.fourdemog.brms <- brms::brm(formula = BFNE_sum_change ~ 
+                    BFNE_sum_pre + Course + URM + FirstGen + GenderTwoCat + treatment*LowIncome,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_fne, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# fne.income.fourdemog.brms <- readRDS ("models/fne.income.fourdemog.brms.rds")
+summary(fne.income.fourdemog.brms)
+write_rds(fne.income.fourdemog.brms, "models/fne.income.fourdemog.brms.rds")
+
+## hypothesis test for fne increase in control for lowincome ER 2.96 (2.3 after bad item removed) (4.64 after 2024 data)
+### weak evidence for fne increase in control for lowincome
+brms::hypothesis(fne.income.fourdemog.brms, "LowIncomeYes > 0")
+## hypothesis test for fne decrease in treatment for mid/high income ER 8.7 (6.37 after bad item removed) (5.16 after 2024 data)
+### evidence for fne decrease for mid/high income
+brms::hypothesis(fne.income.fourdemog.brms, "treatmenttreatment < 0")
+## hypothesis test for fne decrease for lowincome with treatment ER 2.88 (2.18 after bad item removed) (3.11 after 2024 data)
+### weak evidence for fne decrease in treatment for lowincome
+brms::hypothesis(fne.income.fourdemog.brms, "treatmenttreatment:LowIncomeYes < 0")
+
+# sense of belonging change differences between income groups bayes mod
+belong.income.fourdemog.brms <- brms::brm(formula = BelongAll_sum_change ~ 
+                    BelongAll_sum_pre + Course + URM + FirstGen + GenderTwoCat + treatment*LowIncome,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_belong, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# belong.income.fourdemog.brms <- readRDS("models/belong.income.fourdemog.brms.rds")
+summary(belong.income.fourdemog.brms)
+write_rds(belong.income.fourdemog.brms, "models/belong.income.fourdemog.brms.rds")
+
+## hypothesis test for belonging decrease in control for lowincome ER 0.33 (1.39 after 2024 data)
+brms::hypothesis(belong.income.fourdemog.brms, "LowIncomeYes < 0")
+## hypothesis test for belonging increase in treatment for mid/high income ER 4.37 (4.26 after 2024 data)
+## evidence for belonging increase in treatment for mid/high income
+brms::hypothesis(belong.income.fourdemog.brms, "treatmenttreatment > 0")
+## hypothesis test for belonging increase change for lowincome with treatment ER 1.72 (1.94 after 2024 data)
+brms::hypothesis(belong.income.fourdemog.brms, "treatmenttreatment:LowIncomeYes > 0")
+
+########################
+
+# self efficacy - interest
+selfeffint.income.fourdemog.brms <- brms::brm(formula = SelfEff_int_sum_change ~ 
+                    SelfEff_int_sum_pre + Course + URM + FirstGen + GenderTwoCat + treatment*LowIncome,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_selfeffint, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# selfeffint.income.fourdemog.brms <- readRDS("models/selfeffint.income.fourdemog.brms.rds")
+summary(selfeffint.income.fourdemog.brms)
+write_rds(selfeffint.income.fourdemog.brms, "models/selfeffint.income.fourdemog.brms.rds")
+
+## hypothesis test for selfeff decrease in control for lowincome ER 3.67 after 2024 data)
+## evidence that selfeff decrease in control for lowincome
+brms::hypothesis(selfeffint.income.fourdemog.brms, "LowIncomeYes < 0")
+## hypothesis test for selfeff increase in treatment for mid/high income ER 0.75 after 2024 data)
+brms::hypothesis(selfeffint.income.fourdemog.brms, "treatmenttreatment > 0")
+## hypothesis test for selfeff increase change for lowincome with treatment ER 0.73 after 2024 data)
+brms::hypothesis(selfeffint.income.fourdemog.brms, "treatmenttreatment:LowIncomeYes > 0")
+
+########################
+
+# self efficacy - utility
+selfeffutil.income.fourdemog.brms <- brms::brm(formula = SelfEff_util_sum_change ~ 
+                    SelfEff_util_sum_pre + Course + URM + FirstGen + GenderTwoCat + treatment*LowIncome,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_selfeffutil, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# selfeffutil.income.fourdemog.brms <- readRDS("models/selfeffutil.income.fourdemog.brms.rds")
+summary(selfeffutil.income.fourdemog.brms)
+write_rds(selfeffutil.income.fourdemog.brms, "models/selfeffutil.income.fourdemog.brms.rds")
+
+## hypothesis test for selfeff decrease in control for lowincome ER 6.82 after 2024 data)
+## evidence that selfeff decrease in control for lowincome
+brms::hypothesis(selfeffutil.income.fourdemog.brms, "LowIncomeYes < 0")
+## hypothesis test for selfeff increase in treatment for mid/high income ER 0.31 after 2024 data)
+brms::hypothesis(selfeffutil.income.fourdemog.brms, "treatmenttreatment > 0")
+## hypothesis test for selfeff increase change for lowincome with treatment ER 4.51 after 2024 data)
+brms::hypothesis(selfeffutil.income.fourdemog.brms, "treatmenttreatment:LowIncomeYes > 0")
+
+########################
+
+# self efficacy - cost
+selfeffcost.income.fourdemog.brms <- brms::brm(formula = SelfEff_cost_sum_change ~ 
+                    SelfEff_cost_sum_pre + Course + URM + FirstGen + GenderTwoCat + treatment*LowIncome,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_selfeffcost, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# selfeffcost.income.fourdemog.brms <- readRDS("models/selfeffcost.income.fourdemog.brms.rds")
+summary(selfeffcost.income.fourdemog.brms)
+write_rds(selfeffcost.income.fourdemog.brms, "models/selfeffcost.income.fourdemog.brms.rds")
+
+## hypothesis test for selfeff decrease in control for lowincome ER 6.22 after 2024 data)
+## evidence that selfeff decrease in control for lowincome
+brms::hypothesis(selfeffcost.income.fourdemog.brms, "LowIncomeYes < 0")
+## hypothesis test for selfeff increase in treatment for mid/high income ER 2.18 after 2024 data)
+brms::hypothesis(selfeffcost.income.fourdemog.brms, "treatmenttreatment > 0")
+## hypothesis test for selfeff increase change for lowincome with treatment ER 0.36 after 2024 data)
+brms::hypothesis(selfeffcost.income.fourdemog.brms, "treatmenttreatment:LowIncomeYes > 0")
+
+######################################
+
+# instrumental support seeking change differences between income groups bayes mod
+copeinstrum.income.fourdemog.brms <- brms::brm(formula = CopeInstrum_sum_change ~ 
+                    CopeInstrum_sum_pre + Course + URM + FirstGen + GenderTwoCat + treatment*LowIncome,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_copeinstrum, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# copeinstrum.income.fourdemog.brms <- readRDS("models/copeinstrum.income.fourdemog.brms.rds")
+summary(copeinstrum.income.fourdemog.brms)
+write_rds(copeinstrum.income.fourdemog.brms, "models/copeinstrum.income.fourdemog.brms.rds")
+
+## hypothesis test for copeinstrum decrease in control for income ER (4.71 after 2024 data)
+### evidence that copeinstrum decrease in control for lowincome
+brms::hypothesis(copeinstrum.income.fourdemog.brms, "LowIncomeYes < 0")
+## hypothesis test for copeinstrum decrease in treatment for non income ER (8.67 after 2024 data) - opposite from expectation
+### evidence for copeinstrum decrease in treatment overall
+brms::hypothesis(copeinstrum.income.fourdemog.brms, "treatmenttreatment < 0")
+## hypothesis test for copeinstrum increase change for income with treatment ER (4.71 after 2024 data)
+### evidence
+brms::hypothesis(copeinstrum.income.fourdemog.brms, "treatmenttreatment:LowIncomeYes > 0")
+```
+
+
+
+### POC bayes test mods for effect of treatment on affective measures across POC groups WITH FOUR DEMOGRAPHIC GROUPS
+```{r}
+# mods controlling for other group affiliations
+
+# fne change differences between income groups bayes mod
+fne.poc.fourdemog.brms <- brms::brm(formula = BFNE_sum_change ~ 
+                    BFNE_sum_pre + Course + LowIncome + FirstGen + GenderTwoCat + GenderTwoCat + treatment*URM,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_fne, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# fne.poc.fourdemog.brms <- readRDS("models/fne.poc.fourdemog.brms.rds")
+summary(fne.poc.fourdemog.brms)
+write_rds(fne.poc.fourdemog.brms, "models/fne.poc.fourdemog.brms.rds")
+
+## hypothesis test for fne increase in control for poc ER 7.62 (after bad item removed)  (21.6 after 2024 data)
+## strong evidence that fne increased for poc with control
+brms::hypothesis(fne.poc.fourdemog.brms, "URMYes > 0")
+## hypothesis test for fne decrease in treatment for non poc ER 3.74 (after bad item removed)  (2.14 after 2024 data)
+brms::hypothesis(fne.poc.fourdemog.brms, "treatmenttreatment < 0")
+## hypothesis test for fne decrease for poc with treatment ER 2.22 (after bad item removed)  (4.65 after 2024 data)
+brms::hypothesis(fne.poc.fourdemog.brms, "treatmenttreatment:URMYes < 0")
+
+
+# sense of belonging change differences between income groups bayes mod
+belong.poc.fourdemog.brms <- brms::brm(formula = BelongAll_sum_change ~ 
+                    BelongAll_sum_pre + Course + LowIncome + FirstGen + GenderTwoCat + treatment*URM,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_belong, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# belong.poc.fourdemog.brms <-  readRDS("models/belong.poc.fourdemog.brms.rds")
+summary(belong.poc.fourdemog.brms)
+write_rds(belong.poc.fourdemog.brms, "models/belong.poc.fourdemog.brms.rds")
+
+## hypothesis test for belonging decrease in control for poc ER  (2.95 after 2024 data)
+## weak evidence that belonging decreased for poc with control
+brms::hypothesis(belong.poc.fourdemog.brms, "URMYes < 0")
+## hypothesis test for belonging increase in treatment for non poc ER  (3.71 after 2024 data)
+## evidence that belonging increased for students overall with treatment
+brms::hypothesis(belong.poc.fourdemog.brms, "treatmenttreatment > 0")
+## hypothesis test for belonging increase change for poc with treatment ER  (1.23 after 2024 data)
+brms::hypothesis(belong.poc.fourdemog.brms, "treatmenttreatment:URMYes > 0") 
+
+######################################################
+
+# self efficacy - interest
+selfeffint.urm.fourdemog.brms <- brms::brm(formula = SelfEff_int_sum_change ~ 
+                    SelfEff_int_sum_pre + Course + LowIncome + FirstGen + GenderTwoCat + treatment*URM,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_selfeffint, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# selfeffint.urm.fourdemog.brms <- readRDS("models/selfeffint.urm.fourdemog.brms.rds")
+summary(selfeffint.urm.fourdemog.brms)
+write_rds(selfeffint.urm.fourdemog.brms, "models/selfeffint.urm.fourdemog.brms.rds")
+
+## hypothesis test for selfeff decrease in control for poc ER 4.99 after 2024 data)
+brms::hypothesis(selfeffint.urm.fourdemog.brms, "URMYes < 0")
+## hypothesis test for selfeff decrease in treatment for non poc ER 10.92 after 2024 data) - opposite from expectation
+brms::hypothesis(selfeffint.urm.fourdemog.brms, "treatmenttreatment < 0")
+## hypothesis test for selfeff increase change for poc with treatment ER 17.87 after 2024 data)
+brms::hypothesis(selfeffint.urm.fourdemog.brms, "treatmenttreatment:URMYes > 0")
+
+########################
+
+# self efficacy - utility
+selfeffutil.urm.fourdemog.brms <- brms::brm(formula = SelfEff_util_sum_change ~ 
+                    SelfEff_util_sum_pre + Course + LowIncome + FirstGen + GenderTwoCat + treatment*URM,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_selfeffutil, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# selfeffutil.urm.fourdemog.brms <- readRDS("models/selfeffutil.urm.fourdemog.brms.rds")
+summary(selfeffutil.urm.fourdemog.brms)
+write_rds(selfeffutil.urm.fourdemog.brms, "models/selfeffutil.urm.fourdemog.brms.rds")
+
+## hypothesis test for selfeff decrease in control for poc ER 130.15 after 2024 data)
+brms::hypothesis(selfeffutil.urm.fourdemog.brms, "URMYes < 0")
+## hypothesis test for selfeff decrease in treatment for non poc ER 6.49 after 2024 data) - opposite from expectation
+brms::hypothesis(selfeffutil.urm.fourdemog.brms, "treatmenttreatment < 0")
+## hypothesis test for selfeff increase change for poc with treatment ER 7.84 after 2024 data)
+brms::hypothesis(selfeffutil.urm.fourdemog.brms, "treatmenttreatment:URMYes > 0")
+
+########################
+
+# self efficacy - cost
+selfeffcost.urm.fourdemog.brms <- brms::brm(formula = SelfEff_cost_sum_change ~ 
+                    SelfEff_cost_sum_pre + Course + LowIncome + FirstGen + GenderTwoCat + treatment*URM,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_selfeffcost, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# selfeffcost.urm.fourdemog.brms <- readRDS("models/selfeffcost.urm.fourdemog.brms.rds")
+summary(selfeffcost.urm.fourdemog.brms)
+write_rds(selfeffcost.urm.fourdemog.brms, "models/selfeffcost.urm.fourdemog.brms.rds")
+
+## hypothesis test for selfeff decrease in control for poc ER 0.71 after 2024 data)
+brms::hypothesis(selfeffcost.urm.fourdemog.brms, "URMYes < 0")
+## hypothesis test for selfeff increase in treatment for non poc ER 7.02 after 2024 data)
+brms::hypothesis(selfeffcost.urm.fourdemog.brms, "treatmenttreatment > 0")
+## hypothesis test for selfeff decrease for poc with treatment ER 10.99 after 2024 data) - opposite from expectation
+brms::hypothesis(selfeffcost.urm.fourdemog.brms, "treatmenttreatment:URMYes < 0")
+
+# instrumental support seeking change differences between income groups bayes mod
+copeinstrum.poc.fourdemog.brms <- brms::brm(formula = CopeInstrum_sum_change ~ 
+                    CopeInstrum_sum_pre + Course + LowIncome + FirstGen + GenderTwoCat + treatment*URM,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_copeinstrum, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# copeinstrum.poc.fourdemog.brms <- readRDS("models/copeinstrum.poc.fourdemog.brms.rds")
+summary(copeinstrum.poc.fourdemog.brms)
+write_rds(copeinstrum.poc.fourdemog.brms, "models/copeinstrum.poc.fourdemog.brms.rds")
+
+## hypothesis test for copeinstrum decrease in control for poc ER (0.93 after 2024 data)
+brms::hypothesis(copeinstrum.poc.fourdemog.brms, "URMYes < 0")
+## hypothesis test for copeinstrum decrease in treatment for non poc ER (17.14 after 2024 data) - opposite from expectation
+## evidence that treatment decreases copeinstrum for students overall
+brms::hypothesis(copeinstrum.poc.fourdemog.brms, "treatmenttreatment < 0")
+## hypothesis test for copeinstrum increase change for poc with treatment ER (10.19 after 2024 data)
+## evidence that treatment increases copeinstrum for poc students
+brms::hypothesis(copeinstrum.poc.fourdemog.brms, "treatmenttreatment:URMYes > 0")
+```
+
+
+
+### FirstGen bayes test mods for effect of treatment on affective measures across first/continuing gen groups WITH FOUR DEMOGRAPHIC GROUPS
+```{r}
+# mods controlling for other group affiliations
+# mods with no control for group affiliations weren't too much different)
+
+# fne change differences between income groups bayes mod
+fne.gen.fourdemog.brms <- brms::brm(formula = BFNE_sum_change ~ 
+                    BFNE_sum_pre + Course + LowIncome + URM + GenderTwoCat + treatment*FirstGen,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_fne, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# fne.gen.fourdemog.brms <- readRDS("models/fne.gen.fourdemog.brms.rds")
+summary(fne.gen.fourdemog.brms)
+write_rds(fne.gen.fourdemog.brms, "models/fne.gen.fourdemog.brms.rds")
+
+## hypothesis test for fne increase in control for first gen ER 0.27 (after bad item removed) 4.05 after 2024 data - opposite from expectation
+brms::hypothesis(fne.gen.fourdemog.brms, "FirstGenYes < 0")
+## hypothesis test for fne decrease in treatment for continuing gen ER 9.46 (after bad item removed) 6.32 after 2024 data
+brms::hypothesis(fne.gen.fourdemog.brms, "treatmenttreatment < 0")
+## hypothesis test for fne decrease for first gen with treatment ER 0.88 (after bad item removed) 1.39 after 2024 data
+brms::hypothesis(fne.gen.fourdemog.brms, "treatmenttreatment:FirstGenYes < 0")
+
+
+# sense of belonging change differences between income groups bayes mod
+belong.gen.fourdemog.brms <- brms::brm(formula = BelongAll_sum_change ~ 
+                    BelongAll_sum_pre + Course + LowIncome + URM + GenderTwoCat + treatment*FirstGen,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_belong, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# belong.gen.fourdemog.brms <- readRDS("models/belong.gen.fourdemog.brms.rds")
+summary(belong.gen.fourdemog.brms)
+write_rds(belong.gen.fourdemog.brms, "models/belong.gen.fourdemog.brms.rds")
+
+## hypothesis test for belonging decrease in control for first gen ER 0.39 after f2024
+brms::hypothesis(belong.gen.fourdemog.brms, "FirstGenYes < 0")
+## hypothesis test for belonging increase in treatment for continuing gen ER 4.7 after f2024
+brms::hypothesis(belong.gen.fourdemog.brms, "treatmenttreatment > 0")
+## hypothesis test for belonging increase change for first gen with treatment ER 1.63 after f2024
+brms::hypothesis(belong.gen.fourdemog.brms, "treatmenttreatment:FirstGenYes > 0")
+
+######################################################
+
+# self efficacy - interest
+selfeffint.gen.fourdemog.brms <- brms::brm(formula = SelfEff_int_sum_change ~ 
+                    SelfEff_int_sum_pre + Course + LowIncome + URM + GenderTwoCat + treatment*FirstGen,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_selfeffint, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# selfeffint.gen.fourdemog.brms <- readRDS("models/selfeffint.gen.fourdemog.brms.rds")
+summary(selfeffint.gen.fourdemog.brms)
+write_rds(selfeffint.gen.fourdemog.brms, "models/selfeffint.gen.fourdemog.brms.rds")
+
+## hypothesis test for selfeff increase in control for poc ER 6.32 after 2024 data) - opposite from expectation
+brms::hypothesis(selfeffint.gen.fourdemog.brms, "FirstGenYes > 0")
+## hypothesis test for selfeff increase in treatment for non poc ER 0.96 after 2024 data)
+brms::hypothesis(selfeffint.gen.fourdemog.brms, "treatmenttreatment > 0")
+## hypothesis test for selfeff increase change for poc with treatment ER 0.47 after 2024 data)
+brms::hypothesis(selfeffint.gen.fourdemog.brms, "treatmenttreatment:FirstGenYes > 0")
+
+########################
+
+# self efficacy - utility
+selfeffutil.gen.fourdemog.brms <- brms::brm(formula = SelfEff_util_sum_change ~ 
+                    SelfEff_util_sum_pre + Course + LowIncome + URM + GenderTwoCat + treatment*FirstGen,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_selfeffutil, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# selfeffutil.gen.fourdemog.brms <- readRDS("models/selfeffutil.gen.fourdemog.brms.rds")
+summary(selfeffutil.gen.fourdemog.brms)
+write_rds(selfeffutil.gen.fourdemog.brms, "models/selfeffutil.gen.fourdemog.brms.rds")
+
+## hypothesis test for selfeff decrease in control for poc ER 1.07 after 2024 data)
+brms::hypothesis(selfeffutil.gen.fourdemog.brms, "FirstGenYes < 0")
+## hypothesis test for selfeff increase in treatment for non poc ER 0.7 after 2024 data)
+brms::hypothesis(selfeffutil.gen.fourdemog.brms, "treatmenttreatment > 0")
+## hypothesis test for selfeff increase for poc with treatment ER 0.85 after 2024 data)
+brms::hypothesis(selfeffutil.gen.fourdemog.brms, "treatmenttreatment:FirstGenYes > 0")
+
+
+# self efficacy - cost
+selfeffcost.gen.fourdemog.brms <- brms::brm(formula = SelfEff_cost_sum_change ~ 
+                    SelfEff_cost_sum_pre + Course + LowIncome + URM + GenderTwoCat + treatment*FirstGen,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_selfeffcost, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# selfeffcost.gen.fourdemog.brms <- readRDS("models/selfeffcost.gen.fourdemog.brms.rds")
+summary(selfeffcost.gen.fourdemog.brms)
+write_rds(selfeffcost.gen.fourdemog.brms, "models/selfeffcost.gen.fourdemog.brms.rds")
+
+## hypothesis test for selfeff increase in control for poc ER 13.39 after 2024 data) - opposite from expectation
+brms::hypothesis(selfeffcost.gen.fourdemog.brms, "FirstGenYes > 0")
+## hypothesis test for selfeff increase in treatment for non poc ER 3.23 after 2024 data)
+brms::hypothesis(selfeffcost.gen.fourdemog.brms, "treatmenttreatment > 0")
+## hypothesis test for selfeff decrease for poc with treatment ER 5.81 after 2024 data) - opposite from expectation
+brms::hypothesis(selfeffcost.gen.fourdemog.brms, "treatmenttreatment:FirstGenYes < 0")
+
+########################
+
+# instrumental support seeking change differences between income groups bayes mod
+copeinstrum.gen.fourdemog.brms <- brms::brm(formula = CopeInstrum_sum_change ~ 
+                    CopeInstrum_sum_pre + Course + LowIncome + URM + GenderTwoCat + treatment*FirstGen,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_copeinstrum, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# copeinstrum.gen.fourdemog.brms <- readRDS("models/copeinstrum.gen.fourdemog.brms.rds")
+summary(copeinstrum.gen.fourdemog.brms)
+write_rds(copeinstrum.gen.fourdemog.brms, "models/copeinstrum.gen.fourdemog.brms.rds")
+
+## hypothesis test for copeinstrum increase in control for first gen ER 3.86 after 2024 - opposite from expectation
+brms::hypothesis(copeinstrum.gen.fourdemog.brms, "FirstGenYes > 0")
+## hypothesis test for belonging decrease in treatment for continuing gen ER 4.49 after 2024 - opposite from expectation
+brms::hypothesis(copeinstrum.gen.fourdemog.brms, "treatmenttreatment < 0")
+## hypothesis test for belonging increase change for first gen with treatment ER 1.36 after 2024
+brms::hypothesis(copeinstrum.gen.fourdemog.brms, "treatmenttreatment:FirstGenYes > 0")
+```
+
+
+
+### GenderTwoCat bayes test mods for effect of treatment on affective measures across gender groups WITH FOUR DEMOGRAPHIC GROUPS
+```{r}
+# mods controlling for other group affiliations
+# mods with no control for group affiliations weren't too much different)
+
+# fne change differences between income groups bayes mod
+fne.gender.fourdemog.brms <- brms::brm(formula = BFNE_sum_change ~ 
+                    BFNE_sum_pre + Course + LowIncome + URM + FirstGen + treatment*GenderTwoCat,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_fne, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# fne.gender.fourdemog.brms <- readRDS("models/fne.gender.fourdemog.brms.rds")
+summary(fne.gender.fourdemog.brms)
+write_rds(fne.gender.fourdemog.brms, "models/fne.gender.fourdemog.brms.rds")
+
+## hypothesis test for fne increase in control for first gen ER 0.27 (after bad item removed) 4.05 after 2024 data - opposite from expectation
+brms::hypothesis(fne.gender.fourdemog.brms, "GenderTwoCatFemaleOther < 0")
+## hypothesis test for fne decrease in treatment for continuing gen ER 9.46 (after bad item removed) 6.32 after 2024 data
+brms::hypothesis(fne.gender.fourdemog.brms, "treatmenttreatment < 0")
+## hypothesis test for fne decrease for first gen with treatment ER 0.88 (after bad item removed) 1.39 after 2024 data
+brms::hypothesis(fne.gender.fourdemog.brms, "treatmenttreatment:GenderTwoCatFemaleOther < 0")
+
+
+# sense of belonging change differences between income groups bayes mod
+belong.gender.fourdemog.brms <- brms::brm(formula = BelongAll_sum_change ~ 
+                    BelongAll_sum_pre + Course + LowIncome + URM + FirstGen + treatment*GenderTwoCat,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_belong, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# belong.gender.fourdemog.brms <- readRDS("models/belong.gender.fourdemog.brms.rds")
+summary(belong.gender.fourdemog.brms)
+write_rds(belong.gender.fourdemog.brms, "models/belong.gender.fourdemog.brms.rds")
+
+## hypothesis test for belonging decrease in control for first gen ER 0.39 after f2024
+brms::hypothesis(belong.gender.fourdemog.brms, "GenderTwoCatFemaleOther < 0")
+## hypothesis test for belonging increase in treatment for continuing gen ER 4.7 after f2024
+brms::hypothesis(belong.gender.fourdemog.brms, "treatmenttreatment > 0")
+## hypothesis test for belonging increase change for first gen with treatment ER 1.63 after f2024
+brms::hypothesis(belong.gender.fourdemog.brms, "treatmenttreatment:GenderTwoCatFemaleOther > 0")
+
+######################################################
+
+# self efficacy - interest
+selfeffint.gender.fourdemog.brms <- brms::brm(formula = SelfEff_int_sum_change ~ 
+                    SelfEff_int_sum_pre + Course + LowIncome + URM + FirstGen + treatment*GenderTwoCat,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_selfeffint, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# selfeffint.gender.fourdemog.brms <- readRDS("models/selfeffint.gender.fourdemog.brms.rds")
+summary(selfeffint.gender.fourdemog.brms)
+write_rds(selfeffint.gender.fourdemog.brms, "models/selfeffint.gender.fourdemog.brms.rds")
+
+## hypothesis test for selfeff increase in control for poc ER 6.32 after 2024 data) - opposite from expectation
+brms::hypothesis(selfeffint.gender.fourdemog.brms, "GenderTwoCatFemaleOther > 0")
+## hypothesis test for selfeff increase in treatment for non poc ER 0.96 after 2024 data)
+brms::hypothesis(selfeffint.gender.fourdemog.brms, "treatmenttreatment > 0")
+## hypothesis test for selfeff increase change for poc with treatment ER 0.47 after 2024 data)
+brms::hypothesis(selfeffint.gender.fourdemog.brms, "treatmenttreatment:GenderTwoCatFemaleOther > 0")
+
+########################
+
+# self efficacy - utility
+selfeffutil.gender.fourdemog.brms <- brms::brm(formula = SelfEff_util_sum_change ~ 
+                    SelfEff_util_sum_pre + Course + LowIncome + URM + FirstGen + treatment*GenderTwoCat,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_selfeffutil, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# selfeffutil.gender.fourdemog.brms <- readRDS("models/selfeffutil.gender.fourdemog.brms.rds")
+summary(selfeffutil.gender.fourdemog.brms)
+write_rds(selfeffutil.gender.fourdemog.brms, "models/selfeffutil.gender.fourdemog.brms.rds")
+
+## hypothesis test for selfeff decrease in control for poc ER 1.07 after 2024 data)
+brms::hypothesis(selfeffutil.gender.fourdemog.brms, "GenderTwoCatFemaleOther < 0")
+## hypothesis test for selfeff increase in treatment for non poc ER 0.7 after 2024 data)
+brms::hypothesis(selfeffutil.gender.fourdemog.brms, "treatmenttreatment > 0")
+## hypothesis test for selfeff increase for poc with treatment ER 0.85 after 2024 data)
+brms::hypothesis(selfeffutil.gender.fourdemog.brms, "treatmenttreatment:GenderTwoCatFemaleOther > 0")
+
+
+# self efficacy - cost
+selfeffcost.gender.fourdemog.brms <- brms::brm(formula = SelfEff_cost_sum_change ~ 
+                    SelfEff_cost_sum_pre + Course + LowIncome + URM + FirstGen + treatment*GenderTwoCat,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_selfeffcost, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# selfeffcost.gender.fourdemog.brms <- readRDS("models/selfeffcost.gender.fourdemog.brms.rds")
+summary(selfeffcost.gender.fourdemog.brms)
+write_rds(selfeffcost.gender.fourdemog.brms, "models/selfeffcost.gender.fourdemog.brms.rds")
+
+## hypothesis test for selfeff increase in control for poc ER 13.39 after 2024 data) - opposite from expectation
+brms::hypothesis(selfeffcost.gender.fourdemog.brms, "GenderTwoCatFemaleOther > 0")
+## hypothesis test for selfeff increase in treatment for non poc ER 3.23 after 2024 data)
+brms::hypothesis(selfeffcost.gender.fourdemog.brms, "treatmenttreatment > 0")
+## hypothesis test for selfeff decrease for poc with treatment ER 5.81 after 2024 data) - opposite from expectation
+brms::hypothesis(selfeffcost.gender.fourdemog.brms, "treatmenttreatment:GenderTwoCatFemaleOther < 0")
+
+########################
+
+# instrumental support seeking change differences between income groups bayes mod
+copeinstrum.gender.fourdemog.brms <- brms::brm(formula = CopeInstrum_sum_change ~ 
+                    CopeInstrum_sum_pre + Course + LowIncome + URM + FirstGen + treatment*GenderTwoCat,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_copeinstrum, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# copeinstrum.gender.fourdemog.brms <- readRDS("models/copeinstrum.gender.fourdemog.brms.rds")
+summary(copeinstrum.gender.fourdemog.brms)
+write_rds(copeinstrum.gender.fourdemog.brms, "models/copeinstrum.gender.fourdemog.brms.rds")
+
+## hypothesis test for copeinstrum increase in control for first gen ER 3.86 after 2024 - opposite from expectation
+brms::hypothesis(copeinstrum.gender.fourdemog.brms, "GenderTwoCatFemaleOther > 0")
+## hypothesis test for belonging decrease in treatment for continuing gen ER 4.49 after 2024 - opposite from expectation
+brms::hypothesis(copeinstrum.gender.fourdemog.brms, "treatmenttreatment < 0")
+## hypothesis test for belonging increase change for first gen with treatment ER 1.36 after 2024
+brms::hypothesis(copeinstrum.gender.fourdemog.brms, "treatmenttreatment:GenderTwoCatFemaleOther > 0")
+```
+
+
+
+
+### bayes test mods for effect of treatment on grade across groups - initial grade WITH FOUR DEMOGRAPHIC GROUPS
+```{r}
+# matched.allgroups.gender.dat$TotalPercent_init <- matched.allgroups.gender.dat$TotalPercent_init*100
+
+# grade differences between income groups bayes mod
+grade.income.fourdemog.brms <- brms::brm(formula = TotalPercent_init ~ 
+                    Course + URM + FirstGen + GenderTwoCat + LowIncome*treatment,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_grade, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# grade.income.fourdemog.brms <- readRDS("models/grade.income.fourdemog.brms.toF2024.rds")
+print(summary(grade.income.fourdemog.brms), digits = 4)
+write_rds(grade.income.fourdemog.brms, "models/grade.income.fourdemog.brms.toF2024.rds")
+
+## hypothesis test for lower grades in control for lowincome ER 469.59
+### strong evidence for lower grades for low income students in control
+brms::hypothesis(grade.income.fourdemog.brms, "LowIncomeYes < 0")
+## hypothesis test for higher grades with treatment for mid/high income ER 0.91
+brms::hypothesis(grade.income.fourdemog.brms, "treatmenttreatment > 0")
+## hypothesis test for higher grades for lowincome with treatment ER 0.75
+### evidence for lower grades for lowincome with treatment
+brms::hypothesis(grade.income.fourdemog.brms, "LowIncomeYes:treatmenttreatment < 0")
+
+# grade differences between race groups bayes mod
+grade.poc.fourdemog.brms <- brms::brm(formula = TotalPercent_init ~ 
+                    Course + LowIncome + FirstGen + GenderTwoCat + URM*treatment,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_grade, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# grade.poc.fourdemog.brms <- readRDS("models/grade.poc.fourdemog.brms.toF2024.rds")
+print(summary(grade.poc.fourdemog.brms), digits = 4)
+write_rds(grade.poc.fourdemog.brms, "models/grade.poc.fourdemog.brms.toF2024.rds")
+
+## hypothesis test for lower grades in control for poc ER 73.07
+### strong evidence for lower grades for poc income students in control
+brms::hypothesis(grade.poc.fourdemog.brms, "URMYes < 0")
+## hypothesis test for lower grades with treatment for non poc ER 53.05 - opposite from expectation
+brms::hypothesis(grade.poc.fourdemog.brms, "treatmenttreatment < 0")
+## hypothesis test for higher grades for poc with treatment ER 332.33
+### strong evidence for higher grades for poc with treatment
+brms::hypothesis(grade.poc.fourdemog.brms, "URMYes:treatmenttreatment > 0")
+
+
+# grade differences between first/continuing gen groups bayes mod
+grade.gen.fourdemog.brms <- brms::brm(formula = TotalPercent_init ~ 
+                    Course + LowIncome + URM + GenderTwoCat + FirstGen*treatment,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_grade, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# grade.gen.fourdemog.brms <- readRDS("models/grade.gen.fourdemog.brms.toF2024.rds")
+print(summary(grade.gen.fourdemog.brms), digits = 4)
+write_rds(grade.gen.fourdemog.brms, "models/grade.gen.fourdemog.brms.toF2024.rds")
+
+## hypothesis test for lower grades in control for first gen ER 3.99
+### evidence for lower grades in control for first gen
+brms::hypothesis(grade.gen.fourdemog.brms, "FirstGenYes < 0")
+## hypothesis test for higher grades with treatment for continuing gen ER 0.47
+### evidence that lower grades in treatment for continuing gen
+brms::hypothesis(grade.gen.fourdemog.brms, "treatmenttreatment > 0")
+## hypothesis test for higher grades for first gen with treatment ER 4.39
+brms::hypothesis(grade.gen.fourdemog.brms, "FirstGenYes:treatmenttreatment > 0")
+
+
+# grade differences between gender groups bayes mod
+grade.gender.fourdemog.brms <- brms::brm(formula = TotalPercent_init ~ 
+                    Course + LowIncome + URM + FirstGen + GenderTwoCat*treatment,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_grade, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# grade.gender.fourdemog.brms <- readRDS("models/grade.gender.fourdemog.brms.toF2024.rds")
+print(summary(grade.gender.fourdemog.brms), digits = 4)
+write_rds(grade.gender.fourdemog.brms, "models/grade.gender.fourdemog.brms.toF2024.rds")
+
+## hypothesis test for lower grades in control for first gen ER 3.99
+### evidence for lower grades in control for first gen
+brms::hypothesis(grade.gender.fourdemog.brms, "GenderTwoCatFemaleOther > 0")
+## hypothesis test for higher grades with treatment for continuing gen ER 0.47
+### evidence that lower grades in treatment for continuing gen
+brms::hypothesis(grade.gender.fourdemog.brms, "treatmenttreatment > 0")
+## hypothesis test for higher grades for first gen with treatment ER 4.39
+brms::hypothesis(grade.gender.fourdemog.brms, "GenderTwoCatFemaleOther:treatmenttreatment > 0")
+
+
+# overall grade differences between treatment/control - nothing going on
+grade.overall.brms <- brms::brm(formula = TotalPercent_init ~ 
+                    Course + LowIncome + URM + FirstGen + GenderTwoCat + treatment,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_grade, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# grade.overall.brms <- readRDS("models/grade.overall.fourdemog.brms.toF2024.rds")
+summary(grade.overall.brms)
+write_rds(grade.overall.brms, "models/grade.overall.fourdemog.brms.toF2024.rds")
+
+
+## hypothesis test for overall effect of treatment ER 1.04
+brms::hypothesis(grade.overall.brms, "treatmenttreatment > 0")
+```
+
+
+
+
+# test for colinearity in grades mods
+```{r}
+# grade differences between income groups bayes mod
+grade.allinteractions.fourdemog.brms <- brms::brm(formula = TotalPercent_init ~ 
+                    Course + LowIncome*treatment + URM*treatment + FirstGen*treatment + GenderTwoCat*treatment,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# grade.allinteractions.fourdemog.brms <- readRDS("models/grade.allinteractions.fourdemog.brms.toF2024.rds")
+summary(grade.allinteractions.fourdemog.brms)
+
+# grade differences between income groups bayes mod - flat priors - ALL GOOD
+# grade.allinteractions.flat.fourdemog.brms <- brms::brm(formula = TotalPercent_init ~ 
+#                     Course + LowIncome*treatment + URM*treatment + FirstGen*treatment + GenderTwoCat*treatment,
+#                   data = matched.allgroups.gender.dat,
+#                   warmup = 1000,
+#                   iter = 3000,
+#                   seed=SEED, 
+#                   prior = mod_flatpriors, 
+#                   cores = 4,
+#                   sample_prior=TRUE) ## need this to get Bayes factors
+# # grade.allinteractions.flat.fourdemog.brms <- readRDS("models/grade.allinteractions.flat.fourdemog.brms.toF2024.rds")
+# summary(grade.allinteractions.flat.fourdemog.brms)
+
+
+## hypothesis test for higher grades with treatment overall ER 0.2
+brms::hypothesis(grade.allinteractions.fourdemog.brms, "treatmenttreatment > 0")
+
+## hypothesis test for lower grades in control for lowincome ER 319
+### strong evidence for lower grades for low income students in control
+brms::hypothesis(grade.allinteractions.fourdemog.brms, "LowIncomeYes < 0")
+## hypothesis test for higher grades for lowincome with treatment ER 1.65
+### evidence for lower grades for lowincome with treatment
+brms::hypothesis(grade.allinteractions.fourdemog.brms, "LowIncomeYes:treatmenttreatment < 0")
+
+## hypothesis test for lower grades in control for poc ER 35.87
+### strong evidence for lower grades for poc income students in control
+brms::hypothesis(grade.allinteractions.fourdemog.brms, "URMYes < 0")
+## hypothesis test for higher grades for poc with treatment ER 132.33
+### strong evidence for higher grades for poc with treatment
+brms::hypothesis(grade.allinteractions.fourdemog.brms, "treatmenttreatment:URMYes > 0")
+
+## hypothesis test for lower grades in control for first gen ER 2.07
+### evidence for lower grades in control for first gen
+brms::hypothesis(grade.allinteractions.fourdemog.brms, "FirstGenYes < 0")
+## hypothesis test for higher grades for first gen with treatment ER 1.96
+brms::hypothesis(grade.allinteractions.fourdemog.brms, "treatmenttreatment:FirstGenYes > 0")
+
+## hypothesis test for higher grades in control for women/other ER 7
+### evidence for higher grades in control for women/other
+brms::hypothesis(grade.allinteractions.fourdemog.brms, "GenderTwoCatFemaleOther > 0")
+## hypothesis test for higher grades for women/other with treatment ER 0.5
+brms::hypothesis(grade.allinteractions.fourdemog.brms, "treatmenttreatment:GenderTwoCatFemaleOther > 0")
+```
+
+
+
+
+
+
+
+
+##########################################################################################################
+
+
+
+# MODS FOR EFFECTS OF TREATMENT OVERALL WHEN CONTROLLING FOR DEMOGRAPHICS
+
+### bayes test mods for effect of treatment on affective measures overall WITH FOUR DEMOGRAPHIC GROUPS
+```{r}
+# mods controlling for all group affiliations
+
+# fne 
+fne.overall.fourdemog.brms <- brms::brm(formula = BFNE_sum_change ~ 
+                    BFNE_sum_pre + Course + URM + FirstGen + GenderTwoCat + LowIncome + treatment,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_fne, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# fne.overall.fourdemog.brms <- readRDS("models/fne.overall.fourdemog.brms.rds")
+summary(fne.overall.fourdemog.brms)
+# write_rds(fne.overall.fourdemog.brms, "models/fne.overall.fourdemog.brms.rds")
+
+## hypothesis test for overall effect of treatment ER 8.18 (10.49 after item removed) (9.62 with f2024 data)
+### evidence that treatment decreases fne overall
+brms::hypothesis(fne.overall.fourdemog.brms, "treatmenttreatment < 0")
+
+
+# sense of belonging 
+belong.overall.fourdemog.brms <- brms::brm(formula = BelongAll_sum_change ~ 
+                    BelongAll_sum_pre + Course + URM + FirstGen + GenderTwoCat + LowIncome + treatment,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_belong, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# belong.overall.fourdemog.brms <- readRDS("models/belong.overall.fourdemog.brms.rds")
+summary(belong.overall.fourdemog.brms)
+# write_rds(belong.overall.fourdemog.brms, "models/belong.overall.fourdemog.brms.rds")
+
+## hypothesis test for overall effect of treatment ER 3.94 (7.32 with f2024 data)
+### evidence that treatment increases belonging overall
+brms::hypothesis(belong.overall.fourdemog.brms, "treatmenttreatment > 0")
+
+
+# self efficacy - interest
+selfeffint.overall.fourdemog.brms <- brms::brm(formula = SelfEff_int_sum_change ~ 
+                    SelfEff_int_sum_pre + Course + URM + FirstGen + GenderTwoCat + LowIncome + treatment,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_selfeffint, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# selfeffint.overall.fourdemog.brms <- readRDS("models/selfeffint.overall.fourdemog.brms.rds")
+summary(selfeffint.overall.fourdemog.brms)
+# write_rds(selfeffint.overall.fourdemog.brms, "models/selfeffint.overall.fourdemog.brms.rds")
+
+## hypothesis test for overall effect of treatment ER 0.63 with f2024 data
+brms::hypothesis(selfeffint.overall.fourdemog.brms, "treatmenttreatment > 0")
+
+# self efficacy - utility
+selfeffutil.overall.fourdemog.brms <- brms::brm(formula = SelfEff_util_sum_change ~ 
+                    SelfEff_util_sum_pre + Course + URM + FirstGen + GenderTwoCat + LowIncome + treatment,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_selfeffutil, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# selfeffutil.overall.fourdemog.brms <- readRDS("models/selfeffutil.overall.fourdemog.brms.rds")
+summary(selfeffutil.overall.fourdemog.brms)
+# write_rds(selfeffutil.overall.fourdemog.brms, "models/selfeffutil.overall.fourdemog.brms.rds")
+
+## hypothesis test for overall effect of treatment ER 0.61 with f2024 data
+brms::hypothesis(selfeffutil.overall.fourdemog.brms, "treatmenttreatment > 0")
+
+# self efficacy - cost
+selfeffcost.overall.fourdemog.brms <- brms::brm(formula = SelfEff_cost_sum_change ~ 
+                    SelfEff_cost_sum_pre + Course + URM + FirstGen + GenderTwoCat + LowIncome + treatment,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_selfeffcost, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# selfeffcost.overall.fourdemog.brms <- readRDS("models/selfeffcost.overall.fourdemog.brms.rds")
+summary(selfeffcost.overall.fourdemog.brms)
+# write_rds(selfeffcost.overall.fourdemog.brms, "models/selfeffcost.overall.fourdemog.brms.rds")
+
+## hypothesis test for overall effect of treatment ER 1.45 with f2024 data
+brms::hypothesis(selfeffcost.overall.fourdemog.brms, "treatmenttreatment > 0")
+
+
+# instrumental support seeking
+copeinstrum.overall.fourdemog.brms <- brms::brm(formula = CopeInstrum_sum_change ~ 
+                    CopeInstrum_sum_pre + Course + URM + FirstGen + GenderTwoCat + LowIncome + treatment,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors_copeinstrum, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# copeinstrum.overall.fourdemog.brms <- readRDS("models/copeinstrum.overall.fourdemog.brms.rds")
+summary(copeinstrum.overall.fourdemog.brms)
+# write_rds(copeinstrum.overall.fourdemog.brms, "models/copeinstrum.overall.fourdemog.brms.rds")
+
+## hypothesis test for overall effect of treatment ER 0.51 (0.51 with f2024 data)
+brms::hypothesis(copeinstrum.overall.fourdemog.brms, "treatmenttreatment < 0")
+```
+
+
+
+
+##########################################################################################################
+
+
+# DIFFERENCES IN BASELINE AFFECTIVE MEASURES BETWEEN GROUPS
+
+# mods with all groups together
+## sig lower selfeff interest for lowincome
+## lower selfeff utility for lowincome, higher for poc and firstgen (opposite from expectation)
+## lower selfeff cost for lowincome and firstgen, higher for poc (opposite from expectation)
+## lower copeinstrum for first gen students only (no effects with other groups)
+### lower copeactive for first gen students, higher copeinstrum for lowincome (opposite from expectation)
+```{r}
+### bayes test mods for effect of treatment on affective measures across income groups 
+
+# mods controlling for all group affiliations
+
+# fne differences between all groups bayes mod
+## no diff with all groups included
+fne.prediff.brms <- brms::brm(formula = BFNE_sum_pre ~ 
+                    Course + URM + FirstGen + LowIncome + GenderTwoCat,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+summary(fne.prediff.brms)
+write_rds(fne.prediff.brms, "models/preDifferences/fne.prediff.brms.rds")
+
+## hypothesis test for higher fne with lowincome ER 
+brms::hypothesis(fne.prediff.brms, "LowIncomeYes > 0")
+brms::hypothesis(fne.prediff.brms, "URMYes > 0")
+brms::hypothesis(fne.prediff.brms, "FirstGenYes > 0")
+brms::hypothesis(fne.prediff.brms, "GenderTwoCatFemaleOther > 0") ## ER 
+
+
+#########################################
+
+
+# belonging differences between all groups bayes mod
+## no diff with all groups included
+belong.prediff.brms <- brms::brm(formula = BelongAll_sum_pre ~ 
+                    Course + URM + FirstGen + LowIncome + GenderTwoCat,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+summary(belong.prediff.brms)
+write_rds(belong.prediff.brms, "models/preDifferences/belong.prediff.brms.rds")
+
+## hypothesis test for higher fne with lowincome ER 
+brms::hypothesis(belong.prediff.brms, "LowIncomeYes < 0")
+brms::hypothesis(belong.prediff.brms, "URMYes < 0")
+brms::hypothesis(belong.prediff.brms, "FirstGenYes < 0")
+brms::hypothesis(belong.prediff.brms, "GenderTwoCatFemaleOther < 0") ## ER 
+
+
+#########################################
+
+
+# selfeff differences between all groups bayes mod
+## no diff with all groups included
+selfeff.prediff.brms <- brms::brm(formula = SelfEff_sum_pre ~ 
+                    Course + URM + FirstGen + LowIncome + GenderTwoCat,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+summary(selfeff.prediff.brms)
+write_rds(selfeff.prediff.brms, "models/preDifferences/selfeff.prediff.brms.rds")
+
+## hypothesis test for higher fne with lowincome ER 
+brms::hypothesis(selfeff.prediff.brms, "LowIncomeYes < 0")
+brms::hypothesis(selfeff.prediff.brms, "URMYes < 0")
+brms::hypothesis(selfeff.prediff.brms, "FirstGenYes < 0")
+brms::hypothesis(selfeff.prediff.brms, "GenderTwoCatFemaleOther < 0") ## ER 
+
+
+###############################################
+
+
+# selfeff (interest) differences between all groups bayes mod
+## sig lower selfeff interest for lowincome
+selfeffint.prediff.brms <- brms::brm(formula = SelfEff_int_sum_pre ~ 
+                    Course + URM + FirstGen + LowIncome + GenderTwoCat,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+summary(selfeffint.prediff.brms)
+write_rds(selfeffint.prediff.brms, "models/preDifferences/selfeffint.prediff.brms.rds")
+
+## hypothesis tests
+brms::hypothesis(selfeffint.prediff.brms, "LowIncomeYes < 0") ## ER 59.61
+brms::hypothesis(selfeffint.prediff.brms, "URMYes < 0")
+brms::hypothesis(selfeffint.prediff.brms, "FirstGenYes < 0")
+brms::hypothesis(selfeffint.prediff.brms, "GenderTwoCatFemaleOther < 0") ## ER 
+
+
+#########################################
+
+
+# selfeff (utility) differences between all groups bayes mod
+## lower selfeff utility for lowincome, higher for poc and firstgen (opposite from expectation)
+selfeffutil.prediff.brms <- brms::brm(formula = SelfEff_util_sum_pre ~ 
+                    Course + URM + FirstGen + LowIncome + GenderTwoCat,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+summary(selfeffutil.prediff.brms)
+write_rds(selfeffutil.prediff.brms, "models/preDifferences/selfeffutil.prediff.brms.rds")
+
+## hypothesis test for higher fne with lowincome ER 
+brms::hypothesis(selfeffutil.prediff.brms, "LowIncomeYes < 0") ## ER 74.47	
+brms::hypothesis(selfeffutil.prediff.brms, "URMYes > 0") ## ER 4.08 (opposite from expectation)
+brms::hypothesis(selfeffutil.prediff.brms, "FirstGenYes > 0") ## ER 20.16 (opposite from expectation)
+brms::hypothesis(selfeffutil.prediff.brms, "GenderTwoCatFemaleOther < 0") ## ER 
+
+
+#########################################
+
+
+# selfeff (cost) differences between all groups bayes mod
+## lower selfeff cost for lowincome and firstgen, higher for poc (opposite from expectation)
+selfeffcost.prediff.brms <- brms::brm(formula = SelfEff_cost_sum_pre ~ 
+                    Course + URM + FirstGen + LowIncome + GenderTwoCat,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+summary(selfeffcost.prediff.brms)
+write_rds(selfeffcost.prediff.brms, "models/preDifferences/selfeffcost.prediff.brms.rds")
+
+## hypothesis test for higher fne with lowincome ER 
+brms::hypothesis(selfeffcost.prediff.brms, "LowIncomeYes < 0") ## ER 5.83
+brms::hypothesis(selfeffcost.prediff.brms, "URMYes > 0") ## ER 9.53 (opposite from expectation)
+brms::hypothesis(selfeffcost.prediff.brms, "FirstGenYes < 0") ## ER 22.81
+brms::hypothesis(selfeffcost.prediff.brms, "GenderTwoCatFemaleOther < 0") ## ER 
+
+
+#########################################
+
+
+# copeinstrum differences between all groups bayes mod
+## lower copeinstrum for first gen students only (no effects with other groups)
+copeinstrum.prediff.brms <- brms::brm(formula = CopeInstrum_sum_pre ~ 
+                  Course +  URM + FirstGen + LowIncome + GenderTwoCat,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_priors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# copeinstrum.prediff.brms <- readRDS("models/preDifferences/copeinstrum.prediff.brms.rds")
+summary(copeinstrum.prediff.brms)
+write_rds(copeinstrum.prediff.brms, "models/preDifferences/copeinstrum.prediff.brms.rds")
+
+## hypothesis test for higher fne with each group
+### lower copeinstrum for first gen students only
+brms::hypothesis(copeinstrum.prediff.brms, "LowIncomeYes < 0")
+brms::hypothesis(copeinstrum.prediff.brms, "URMYes < 0")
+brms::hypothesis(copeinstrum.prediff.brms, "FirstGenYes < 0") ## ER 62.49
+brms::hypothesis(copeinstrum.prediff.brms, "GenderTwoCatFemaleOther < 0") ## ER 
+```
+
+```{r}
+
+copeinstrum.prediff.brms <- readRDS("models/preDifferences/copeinstrum.prediff.brms.rds")
+
+brms::hypothesis(copeinstrum.prediff.brms, "GenderTwoCatFemaleOther > 0") ## ER 
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+##########################################################################################################
+
+
+# CHECK MODS FOR COLINEARITY USING FLAT PRIORS
+
+
+# set up flat priors to check for colinearity
+## check for effect of change in prior - to check for colinearity - 4 controls and 1 interaction
+```{r}
+# define the prior distributions - informative priors
+mod_priors <- c(# intercept
+                prior(normal(0, 1), class = Intercept), 
+                # weakly informative priors (slightly conservative)
+                ## source: https://michael-franke.github.io/intro-data-analysis/logistic-regression.html
+                #   for `class = 'b'` (i.e., all slopes)
+                prior(student_t(1, 0, 2),  class = 'b')
+                # random effects
+                ## default for random effects for now bc recommended here
+                ## https://m-clark.github.io/mixed-models-with-R/bayesian.html#priors
+                ### default is half-student-t bc values can only be positive
+                # error SD
+                # prior(normal(0, 2), class = sigma))
+                )
+
+# define the prior distributions - flat priors
+mod_flatpriors <- c(# intercept
+                prior(normal(0, 10000), class = Intercept), 
+                # weakly informative priors (slightly conservative)
+                ## source: https://michael-franke.github.io/intro-data-analysis/logistic-regression.html
+                #   for `class = 'b'` (i.e., all slopes)
+                prior(normal(0, 10000),  class = 'b')
+                # random effects
+                ## default for random effects for now bc recommended here
+                ## https://m-clark.github.io/mixed-models-with-R/bayesian.html#priors
+                ### default is half-student-t bc values can only be positive
+                # error SD
+                # prior(normal(0, 2), class = sigma))
+                )
+```
+
+
+### LowIncome flat bayes test mods for effect of treatment on affective measures across income groups WITH PRE MEASURE CONTROL AND FOUR DEMOGRAPHIC GROUPS
+```{r}
+# mods controlling for other group affiliations
+
+# fne change differences between income groups bayes mod
+fne.income.fourdemog.flat.brms <- brms::brm(formula = BFNE_sum_change ~ 
+                    BFNE_sum_pre + Course + URM + FirstGen + GenderTwoCat + treatment*LowIncome,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_flatpriors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# fne.income.fourdemog.flat.brms <- readRDS ("models/fne.income.fourdemog.flat.brms.rds")
+summary(fne.income.fourdemog.flat.brms)
+write_rds(fne.income.fourdemog.flat.brms, "models/fne.income.fourdemog.flat.brms.rds")
+
+## hypothesis test for fne increase in control for lowincome ER 2.96 (2.3 after bad item removed) (4.64 after 2024 data)
+### weak evidence for fne increase in control for lowincome
+brms::hypothesis(fne.income.fourdemog.flat.brms, "LowIncomeYes > 0")
+## hypothesis test for fne decrease in treatment for mid/high income ER 8.7 (6.37 after bad item removed) (5.16 after 2024 data)
+### evidence for fne decrease for mid/high income
+brms::hypothesis(fne.income.fourdemog.flat.brms, "treatmenttreatment < 0")
+## hypothesis test for fne decrease for lowincome with treatment ER 2.88 (2.18 after bad item removed) (3.11 after 2024 data)
+### weak evidence for fne decrease in treatment for lowincome
+brms::hypothesis(fne.income.fourdemog.flat.brms, "treatmenttreatment:LowIncomeYes < 0")
+
+# sense of belonging change differences between income groups bayes mod
+belong.income.fourdemog.flat.brms <- brms::brm(formula = BelongAll_sum_change ~ 
+                    BelongAll_sum_pre + Course + URM + FirstGen + GenderTwoCat + treatment*LowIncome,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_flatpriors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# belong.income.fourdemog.flat.brms <- readRDS("models/belong.income.fourdemog.flat.brms.rds")
+summary(belong.income.fourdemog.flat.brms)
+write_rds(belong.income.fourdemog.flat.brms, "models/belong.income.fourdemog.flat.brms.rds")
+
+## hypothesis test for belonging decrease in control for lowincome ER 0.33 (1.39 after 2024 data)
+brms::hypothesis(belong.income.fourdemog.flat.brms, "LowIncomeYes < 0")
+## hypothesis test for belonging increase in treatment for mid/high income ER 4.37 (4.26 after 2024 data)
+## evidence for belonging increase in treatment for mid/high income
+brms::hypothesis(belong.income.fourdemog.flat.brms, "treatmenttreatment > 0")
+## hypothesis test for belonging increase change for lowincome with treatment ER 1.72 (1.94 after 2024 data)
+brms::hypothesis(belong.income.fourdemog.flat.brms, "treatmenttreatment:LowIncomeYes > 0")
+
+########################
+
+# self efficacy - interest
+selfeffint.income.fourdemog.flat.brms <- brms::brm(formula = SelfEff_int_sum_change ~ 
+                    SelfEff_int_sum_pre + Course + URM + FirstGen + GenderTwoCat + treatment*LowIncome,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_flatpriors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# selfeffint.income.fourdemog.flat.brms <- readRDS("models/selfeffint.income.fourdemog.flat.brms.rds")
+summary(selfeffint.income.fourdemog.flat.brms)
+write_rds(selfeffint.income.fourdemog.flat.brms, "models/selfeffint.income.fourdemog.flat.brms.rds")
+
+## hypothesis test for selfeff decrease in control for lowincome ER 3.67 after 2024 data)
+## evidence that selfeff decrease in control for lowincome
+brms::hypothesis(selfeffint.income.fourdemog.flat.brms, "LowIncomeYes < 0")
+## hypothesis test for selfeff increase in treatment for mid/high income ER 0.75 after 2024 data)
+brms::hypothesis(selfeffint.income.fourdemog.flat.brms, "treatmenttreatment > 0")
+## hypothesis test for selfeff increase change for lowincome with treatment ER 0.73 after 2024 data)
+brms::hypothesis(selfeffint.income.fourdemog.flat.brms, "treatmenttreatment:LowIncomeYes > 0")
+
+########################
+
+# self efficacy - utility
+selfeffutil.income.fourdemog.flat.brms <- brms::brm(formula = SelfEff_util_sum_change ~ 
+                    SelfEff_util_sum_pre + Course + URM + FirstGen + GenderTwoCat + treatment*LowIncome,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_flatpriors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# selfeffutil.income.fourdemog.flat.brms <- readRDS("models/selfeffutil.income.fourdemog.flat.brms.rds")
+summary(selfeffutil.income.fourdemog.flat.brms)
+write_rds(selfeffutil.income.fourdemog.flat.brms, "models/selfeffutil.income.fourdemog.flat.brms.rds")
+
+## hypothesis test for selfeff decrease in control for lowincome ER 6.82 after 2024 data)
+## evidence that selfeff decrease in control for lowincome
+brms::hypothesis(selfeffutil.income.fourdemog.flat.brms, "LowIncomeYes < 0")
+## hypothesis test for selfeff increase in treatment for mid/high income ER 0.31 after 2024 data)
+brms::hypothesis(selfeffutil.income.fourdemog.flat.brms, "treatmenttreatment > 0")
+## hypothesis test for selfeff increase change for lowincome with treatment ER 4.51 after 2024 data)
+brms::hypothesis(selfeffutil.income.fourdemog.flat.brms, "treatmenttreatment:LowIncomeYes > 0")
+
+########################
+
+# self efficacy - cost
+selfeffcost.income.fourdemog.flat.brms <- brms::brm(formula = SelfEff_cost_sum_change ~ 
+                    SelfEff_cost_sum_pre + Course + URM + FirstGen + GenderTwoCat + treatment*LowIncome,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_flatpriors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# selfeffcost.income.fourdemog.flat.brms <- readRDS("models/selfeffcost.income.fourdemog.flat.brms.rds")
+summary(selfeffcost.income.fourdemog.flat.brms)
+write_rds(selfeffcost.income.fourdemog.flat.brms, "models/selfeffcost.income.fourdemog.flat.brms.rds")
+
+## hypothesis test for selfeff decrease in control for lowincome ER 6.22 after 2024 data)
+## evidence that selfeff decrease in control for lowincome
+brms::hypothesis(selfeffcost.income.fourdemog.flat.brms, "LowIncomeYes < 0")
+## hypothesis test for selfeff increase in treatment for mid/high income ER 2.18 after 2024 data)
+brms::hypothesis(selfeffcost.income.fourdemog.flat.brms, "treatmenttreatment > 0")
+## hypothesis test for selfeff increase change for lowincome with treatment ER 0.36 after 2024 data)
+brms::hypothesis(selfeffcost.income.fourdemog.flat.brms, "treatmenttreatment:LowIncomeYes > 0")
+
+######################################
+
+# instrumental support seeking change differences between income groups bayes mod
+copeinstrum.income.fourdemog.flat.brms <- brms::brm(formula = CopeInstrum_sum_change ~ 
+                    CopeInstrum_sum_pre + Course + URM + FirstGen + GenderTwoCat + treatment*LowIncome,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_flatpriors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# copeinstrum.income.fourdemog.flat.brms <- readRDS("models/copeinstrum.income.fourdemog.flat.brms.rds")
+summary(copeinstrum.income.fourdemog.flat.brms)
+write_rds(copeinstrum.income.fourdemog.flat.brms, "models/copeinstrum.income.fourdemog.flat.brms.rds")
+
+## hypothesis test for copeinstrum decrease in control for income ER (4.71 after 2024 data)
+### evidence that copeinstrum decrease in control for lowincome
+brms::hypothesis(copeinstrum.income.fourdemog.flat.brms, "LowIncomeYes < 0")
+## hypothesis test for copeinstrum decrease in treatment for non income ER (8.67 after 2024 data) - opposite from expectation
+### evidence for copeinstrum decrease in treatment overall
+brms::hypothesis(copeinstrum.income.fourdemog.flat.brms, "treatmenttreatment < 0")
+## hypothesis test for copeinstrum increase change for income with treatment ER (4.71 after 2024 data)
+### evidence
+brms::hypothesis(copeinstrum.income.fourdemog.flat.brms, "treatmenttreatment:LowIncomeYes > 0")
+```
+
+
+### POC flat bayes test mods for effect of treatment on affective measures across POC groups WITH FOUR DEMOGRAPHIC GROUPS
+```{r}
+matched.allgroups.gender.dat$GenderTwoCat <- factor(matched.allgroups.gender.dat$GenderTwoCat, levels=c('Male', 'FemaleOther'))
+
+# mods controlling for other group affiliations
+
+# fne change differences between income groups bayes mod
+fne.poc.fourdemog.flat.brms <- brms::brm(formula = BFNE_sum_change ~ 
+                    BFNE_sum_pre + Course + LowIncome + FirstGen + GenderTwoCat + GenderTwoCat + treatment*URM,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_flatpriors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# fne.poc.fourdemog.flat.brms <- readRDS("models/fne.poc.fourdemog.flat.brms.rds")
+summary(fne.poc.fourdemog.flat.brms)
+write_rds(fne.poc.fourdemog.flat.brms, "models/fne.poc.fourdemog.flat.brms.rds")
+
+## hypothesis test for fne increase in control for poc ER 7.62 (after bad item removed)  (21.6 after 2024 data)
+## strong evidence that fne increased for poc with control
+brms::hypothesis(fne.poc.fourdemog.flat.brms, "URMYes > 0")
+## hypothesis test for fne decrease in treatment for non poc ER 3.74 (after bad item removed)  (2.14 after 2024 data)
+brms::hypothesis(fne.poc.fourdemog.flat.brms, "treatmenttreatment < 0")
+## hypothesis test for fne decrease for poc with treatment ER 2.22 (after bad item removed)  (4.65 after 2024 data)
+brms::hypothesis(fne.poc.fourdemog.flat.brms, "treatmenttreatment:URMYes < 0")
+
+
+# sense of belonging change differences between income groups bayes mod
+belong.poc.fourdemog.flat.brms <- brms::brm(formula = BelongAll_sum_change ~ 
+                    BelongAll_sum_pre + Course + LowIncome + FirstGen + GenderTwoCat + treatment*URM,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_flatpriors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# belong.poc.fourdemog.flat.brms <-  readRDS("models/belong.poc.fourdemog.flat.brms.rds")
+summary(belong.poc.fourdemog.flat.brms)
+write_rds(belong.poc.fourdemog.flat.brms, "models/belong.poc.fourdemog.flat.brms.rds")
+
+## hypothesis test for belonging decrease in control for poc ER  (2.95 after 2024 data)
+## weak evidence that belonging decreased for poc with control
+brms::hypothesis(belong.poc.fourdemog.flat.brms, "URMYes < 0")
+## hypothesis test for belonging increase in treatment for non poc ER  (3.71 after 2024 data)
+## evidence that belonging increased for students overall with treatment
+brms::hypothesis(belong.poc.fourdemog.flat.brms, "treatmenttreatment > 0")
+## hypothesis test for belonging increase change for poc with treatment ER  (1.23 after 2024 data)
+brms::hypothesis(belong.poc.fourdemog.flat.brms, "treatmenttreatment:URMYes > 0") 
+
+######################################################
+
+# self efficacy - interest
+selfeffint.urm.fourdemog.flat.brms <- brms::brm(formula = SelfEff_int_sum_change ~ 
+                    SelfEff_int_sum_pre + Course + LowIncome + FirstGen + GenderTwoCat + treatment*URM,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_flatpriors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# selfeffint.urm.fourdemog.flat.brms <- readRDS("models/selfeffint.urm.fourdemog.flat.brms.rds")
+summary(selfeffint.urm.fourdemog.flat.brms)
+write_rds(selfeffint.urm.fourdemog.flat.brms, "models/selfeffint.urm.fourdemog.flat.brms.rds")
+
+## hypothesis test for selfeff decrease in control for poc ER 4.99 after 2024 data)
+brms::hypothesis(selfeffint.urm.fourdemog.flat.brms, "URMYes < 0")
+## hypothesis test for selfeff decrease in treatment for non poc ER 10.92 after 2024 data) - opposite from expectation
+brms::hypothesis(selfeffint.urm.fourdemog.flat.brms, "treatmenttreatment < 0")
+## hypothesis test for selfeff increase change for poc with treatment ER 17.87 after 2024 data)
+brms::hypothesis(selfeffint.urm.fourdemog.flat.brms, "treatmenttreatment:URMYes > 0")
+
+########################
+
+# self efficacy - utility
+selfeffutil.urm.fourdemog.flat.brms <- brms::brm(formula = SelfEff_util_sum_change ~ 
+                    SelfEff_util_sum_pre + Course + LowIncome + FirstGen + GenderTwoCat + treatment*URM,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_flatpriors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# selfeffutil.urm.fourdemog.flat.brms <- readRDS("models/selfeffutil.urm.fourdemog.flat.brms.rds")
+summary(selfeffutil.urm.fourdemog.flat.brms)
+write_rds(selfeffutil.urm.fourdemog.flat.brms, "models/selfeffutil.urm.fourdemog.flat.brms.rds")
+
+## hypothesis test for selfeff decrease in control for poc ER 130.15 after 2024 data)
+brms::hypothesis(selfeffutil.urm.fourdemog.flat.brms, "URMYes < 0")
+## hypothesis test for selfeff decrease in treatment for non poc ER 6.49 after 2024 data) - opposite from expectation
+brms::hypothesis(selfeffutil.urm.fourdemog.flat.brms, "treatmenttreatment < 0")
+## hypothesis test for selfeff increase change for poc with treatment ER 7.84 after 2024 data)
+brms::hypothesis(selfeffutil.urm.fourdemog.flat.brms, "treatmenttreatment:URMYes > 0")
+
+########################
+
+# self efficacy - cost
+selfeffcost.urm.fourdemog.flat.brms <- brms::brm(formula = SelfEff_cost_sum_change ~ 
+                    SelfEff_cost_sum_pre + Course + LowIncome + FirstGen + GenderTwoCat + treatment*URM,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_flatpriors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# selfeffcost.urm.fourdemog.flat.brms <- readRDS("models/selfeffcost.urm.fourdemog.flat.brms.rds")
+summary(selfeffcost.urm.fourdemog.flat.brms)
+write_rds(selfeffcost.urm.fourdemog.flat.brms, "models/selfeffcost.urm.fourdemog.flat.brms.rds")
+
+## hypothesis test for selfeff decrease in control for poc ER 0.71 after 2024 data)
+brms::hypothesis(selfeffcost.urm.fourdemog.flat.brms, "URMYes < 0")
+## hypothesis test for selfeff increase in treatment for non poc ER 7.02 after 2024 data)
+brms::hypothesis(selfeffcost.urm.fourdemog.flat.brms, "treatmenttreatment > 0")
+## hypothesis test for selfeff decrease for poc with treatment ER 10.99 after 2024 data) - opposite from expectation
+brms::hypothesis(selfeffcost.urm.fourdemog.flat.brms, "treatmenttreatment:URMYes < 0")
+
+# instrumental support seeking change differences between income groups bayes mod
+copeinstrum.poc.fourdemog.flat.brms <- brms::brm(formula = CopeInstrum_sum_change ~ 
+                    CopeInstrum_sum_pre + Course + LowIncome + FirstGen + GenderTwoCat + treatment*URM,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_flatpriors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# copeinstrum.poc.fourdemog.flat.brms <- readRDS("models/copeinstrum.poc.fourdemog.flat.brms.rds")
+summary(copeinstrum.poc.fourdemog.flat.brms)
+write_rds(copeinstrum.poc.fourdemog.flat.brms, "models/copeinstrum.poc.fourdemog.flat.brms.rds")
+
+## hypothesis test for copeinstrum decrease in control for poc ER (0.93 after 2024 data)
+brms::hypothesis(copeinstrum.poc.fourdemog.flat.brms, "URMYes < 0")
+## hypothesis test for copeinstrum decrease in treatment for non poc ER (17.14 after 2024 data) - opposite from expectation
+## evidence that treatment decreases copeinstrum for students overall
+brms::hypothesis(copeinstrum.poc.fourdemog.flat.brms, "treatmenttreatment < 0")
+## hypothesis test for copeinstrum increase change for poc with treatment ER (10.19 after 2024 data)
+## evidence that treatment increases copeinstrum for poc students
+brms::hypothesis(copeinstrum.poc.fourdemog.flat.brms, "treatmenttreatment:URMYes > 0")
+```
+
+
+### FirstGen flat bayes test mods for effect of treatment on affective measures across first/continuing gen groups WITH FOUR DEMOGRAPHIC GROUPS
+```{r}
+# mods controlling for other group affiliations
+# mods with no control for group affiliations weren't too much different)
+
+# fne change differences between income groups bayes mod
+fne.gen.fourdemog.flat.brms <- brms::brm(formula = BFNE_sum_change ~ 
+                    BFNE_sum_pre + Course + LowIncome + URM + GenderTwoCat + treatment*FirstGen,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_flatpriors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# fne.gen.fourdemog.flat.brms <- readRDS("models/fne.gen.fourdemog.flat.brms.rds")
+summary(fne.gen.fourdemog.flat.brms)
+write_rds(fne.gen.fourdemog.flat.brms, "models/fne.gen.fourdemog.flat.brms.rds")
+
+## hypothesis test for fne increase in control for first gen ER 0.27 (after bad item removed) 4.05 after 2024 data - opposite from expectation
+brms::hypothesis(fne.gen.fourdemog.flat.brms, "FirstGenYes < 0")
+## hypothesis test for fne decrease in treatment for continuing gen ER 9.46 (after bad item removed) 6.32 after 2024 data
+brms::hypothesis(fne.gen.fourdemog.flat.brms, "treatmenttreatment < 0")
+## hypothesis test for fne decrease for first gen with treatment ER 0.88 (after bad item removed) 1.39 after 2024 data
+brms::hypothesis(fne.gen.fourdemog.flat.brms, "treatmenttreatment:FirstGenYes < 0")
+
+
+# sense of belonging change differences between income groups bayes mod
+belong.gen.fourdemog.flat.brms <- brms::brm(formula = BelongAll_sum_change ~ 
+                    BelongAll_sum_pre + Course + LowIncome + URM + GenderTwoCat + treatment*FirstGen,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_flatpriors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# belong.gen.fourdemog.flat.brms <- readRDS("models/belong.gen.fourdemog.flat.brms.rds")
+summary(belong.gen.fourdemog.flat.brms)
+write_rds(belong.gen.fourdemog.flat.brms, "models/belong.gen.fourdemog.flat.brms.rds")
+
+## hypothesis test for belonging decrease in control for first gen ER 0.39 after f2024
+brms::hypothesis(belong.gen.fourdemog.flat.brms, "FirstGenYes < 0")
+## hypothesis test for belonging increase in treatment for continuing gen ER 4.7 after f2024
+brms::hypothesis(belong.gen.fourdemog.flat.brms, "treatmenttreatment > 0")
+## hypothesis test for belonging increase change for first gen with treatment ER 1.63 after f2024
+brms::hypothesis(belong.gen.fourdemog.flat.brms, "treatmenttreatment:FirstGenYes > 0")
+
+######################################################
+
+# self efficacy - interest
+selfeffint.gen.fourdemog.flat.brms <- brms::brm(formula = SelfEff_int_sum_change ~ 
+                    SelfEff_int_sum_pre + Course + LowIncome + URM + GenderTwoCat + treatment*FirstGen,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_flatpriors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# selfeffint.gen.fourdemog.flat.brms <- readRDS("models/selfeffint.gen.fourdemog.flat.brms.rds")
+summary(selfeffint.gen.fourdemog.flat.brms)
+write_rds(selfeffint.gen.fourdemog.flat.brms, "models/selfeffint.gen.fourdemog.flat.brms.rds")
+
+## hypothesis test for selfeff increase in control for poc ER 6.32 after 2024 data) - opposite from expectation
+brms::hypothesis(selfeffint.gen.fourdemog.flat.brms, "FirstGenYes > 0")
+## hypothesis test for selfeff increase in treatment for non poc ER 0.96 after 2024 data)
+brms::hypothesis(selfeffint.gen.fourdemog.flat.brms, "treatmenttreatment > 0")
+## hypothesis test for selfeff increase change for poc with treatment ER 0.47 after 2024 data)
+brms::hypothesis(selfeffint.gen.fourdemog.flat.brms, "treatmenttreatment:FirstGenYes > 0")
+
+########################
+
+# self efficacy - utility
+selfeffutil.gen.fourdemog.flat.brms <- brms::brm(formula = SelfEff_util_sum_change ~ 
+                    SelfEff_util_sum_pre + Course + LowIncome + URM + GenderTwoCat + treatment*FirstGen,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_flatpriors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# selfeffutil.gen.fourdemog.flat.brms <- readRDS("models/selfeffutil.gen.fourdemog.flat.brms.rds")
+summary(selfeffutil.gen.fourdemog.flat.brms)
+write_rds(selfeffutil.gen.fourdemog.flat.brms, "models/selfeffutil.gen.fourdemog.flat.brms.rds")
+
+## hypothesis test for selfeff decrease in control for poc ER 1.07 after 2024 data)
+brms::hypothesis(selfeffutil.gen.fourdemog.flat.brms, "FirstGenYes < 0")
+## hypothesis test for selfeff increase in treatment for non poc ER 0.7 after 2024 data)
+brms::hypothesis(selfeffutil.gen.fourdemog.flat.brms, "treatmenttreatment > 0")
+## hypothesis test for selfeff increase for poc with treatment ER 0.85 after 2024 data)
+brms::hypothesis(selfeffutil.gen.fourdemog.flat.brms, "treatmenttreatment:FirstGenYes > 0")
+
+
+# self efficacy - cost
+selfeffcost.gen.fourdemog.flat.brms <- brms::brm(formula = SelfEff_cost_sum_change ~ 
+                    SelfEff_cost_sum_pre + Course + LowIncome + URM + GenderTwoCat + treatment*FirstGen,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_flatpriors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# selfeffcost.gen.fourdemog.flat.brms <- readRDS("models/selfeffcost.gen.fourdemog.flat.brms.rds")
+summary(selfeffcost.gen.fourdemog.flat.brms)
+write_rds(selfeffcost.gen.fourdemog.flat.brms, "models/selfeffcost.gen.fourdemog.flat.brms.rds")
+
+## hypothesis test for selfeff increase in control for poc ER 13.39 after 2024 data) - opposite from expectation
+brms::hypothesis(selfeffcost.gen.fourdemog.flat.brms, "FirstGenYes > 0")
+## hypothesis test for selfeff increase in treatment for non poc ER 3.23 after 2024 data)
+brms::hypothesis(selfeffcost.gen.fourdemog.flat.brms, "treatmenttreatment > 0")
+## hypothesis test for selfeff decrease for poc with treatment ER 5.81 after 2024 data) - opposite from expectation
+brms::hypothesis(selfeffcost.gen.fourdemog.flat.brms, "treatmenttreatment:FirstGenYes < 0")
+
+########################
+
+# instrumental support seeking change differences between income groups bayes mod
+copeinstrum.gen.fourdemog.flat.brms <- brms::brm(formula = CopeInstrum_sum_change ~ 
+                    CopeInstrum_sum_pre + Course + LowIncome + URM + GenderTwoCat + treatment*FirstGen,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_flatpriors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# copeinstrum.gen.fourdemog.flat.brms <- readRDS("models/copeinstrum.gen.fourdemog.flat.brms.rds")
+summary(copeinstrum.gen.fourdemog.flat.brms)
+write_rds(copeinstrum.gen.fourdemog.flat.brms, "models/copeinstrum.gen.fourdemog.flat.brms.rds")
+
+## hypothesis test for copeinstrum increase in control for first gen ER 3.86 after 2024 - opposite from expectation
+brms::hypothesis(copeinstrum.gen.fourdemog.flat.brms, "FirstGenYes > 0")
+## hypothesis test for belonging decrease in treatment for continuing gen ER 4.49 after 2024 - opposite from expectation
+brms::hypothesis(copeinstrum.gen.fourdemog.flat.brms, "treatmenttreatment < 0")
+## hypothesis test for belonging increase change for first gen with treatment ER 1.36 after 2024
+brms::hypothesis(copeinstrum.gen.fourdemog.flat.brms, "treatmenttreatment:FirstGenYes > 0")
+```
+
+
+### GenderTwoCat flat bayes test mods for effect of treatment on affective measures across gender groups WITH FOUR DEMOGRAPHIC GROUPS
+```{r}
+# mods controlling for other group affiliations
+# mods with no control for group affiliations weren't too much different)
+
+# fne change differences between income groups bayes mod
+fne.gender.fourdemog.flat.brms <- brms::brm(formula = BFNE_sum_change ~ 
+                    BFNE_sum_pre + Course + LowIncome + URM + FirstGen + treatment*GenderTwoCat,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_flatpriors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# fne.gender.fourdemog.flat.brms <- readRDS("models/fne.gender.fourdemog.flat.brms.rds")
+summary(fne.gender.fourdemog.flat.brms)
+write_rds(fne.gender.fourdemog.flat.brms, "models/fne.gender.fourdemog.flat.brms.rds")
+
+## hypothesis test for fne increase in control for first gen ER 0.27 (after bad item removed) 4.05 after 2024 data - opposite from expectation
+brms::hypothesis(fne.gender.fourdemog.flat.brms, "GenderTwoCatFemaleOther < 0")
+## hypothesis test for fne decrease in treatment for continuing gen ER 9.46 (after bad item removed) 6.32 after 2024 data
+brms::hypothesis(fne.gender.fourdemog.flat.brms, "treatmenttreatment < 0")
+## hypothesis test for fne decrease for first gen with treatment ER 0.88 (after bad item removed) 1.39 after 2024 data
+brms::hypothesis(fne.gender.fourdemog.flat.brms, "treatmenttreatment:GenderTwoCatFemaleOther < 0")
+
+
+# sense of belonging change differences between income groups bayes mod
+belong.gender.fourdemog.flat.brms <- brms::brm(formula = BelongAll_sum_change ~ 
+                    BelongAll_sum_pre + Course + LowIncome + URM + FirstGen + treatment*GenderTwoCat,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_flatpriors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# belong.gender.fourdemog.flat.brms <- readRDS("models/belong.gender.fourdemog.flat.brms.rds")
+summary(belong.gender.fourdemog.flat.brms)
+write_rds(belong.gender.fourdemog.flat.brms, "models/belong.gender.fourdemog.flat.brms.rds")
+
+## hypothesis test for belonging decrease in control for first gen ER 0.39 after f2024
+brms::hypothesis(belong.gender.fourdemog.flat.brms, "GenderTwoCatFemaleOther < 0")
+## hypothesis test for belonging increase in treatment for continuing gen ER 4.7 after f2024
+brms::hypothesis(belong.gender.fourdemog.flat.brms, "treatmenttreatment > 0")
+## hypothesis test for belonging increase change for first gen with treatment ER 1.63 after f2024
+brms::hypothesis(belong.gender.fourdemog.flat.brms, "treatmenttreatment:GenderTwoCatFemaleOther > 0")
+
+######################################################
+
+# self efficacy - interest
+selfeffint.gender.fourdemog.flat.brms <- brms::brm(formula = SelfEff_int_sum_change ~ 
+                    SelfEff_int_sum_pre + Course + LowIncome + URM + FirstGen + treatment*GenderTwoCat,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_flatpriors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# selfeffint.gender.fourdemog.flat.brms <- readRDS("models/selfeffint.gender.fourdemog.flat.brms.rds")
+summary(selfeffint.gender.fourdemog.flat.brms)
+write_rds(selfeffint.gender.fourdemog.flat.brms, "models/selfeffint.gender.fourdemog.flat.brms.rds")
+
+## hypothesis test for selfeff increase in control for poc ER 6.32 after 2024 data) - opposite from expectation
+brms::hypothesis(selfeffint.gender.fourdemog.flat.brms, "GenderTwoCatFemaleOther > 0")
+## hypothesis test for selfeff increase in treatment for non poc ER 0.96 after 2024 data)
+brms::hypothesis(selfeffint.gender.fourdemog.flat.brms, "treatmenttreatment > 0")
+## hypothesis test for selfeff increase change for poc with treatment ER 0.47 after 2024 data)
+brms::hypothesis(selfeffint.gender.fourdemog.flat.brms, "treatmenttreatment:GenderTwoCatFemaleOther > 0")
+
+########################
+
+# self efficacy - utility
+selfeffutil.gender.fourdemog.flat.brms <- brms::brm(formula = SelfEff_util_sum_change ~ 
+                    SelfEff_util_sum_pre + Course + LowIncome + URM + FirstGen + treatment*GenderTwoCat,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_flatpriors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# selfeffutil.gender.fourdemog.flat.brms <- readRDS("models/selfeffutil.gender.fourdemog.flat.brms.rds")
+summary(selfeffutil.gender.fourdemog.flat.brms)
+write_rds(selfeffutil.gender.fourdemog.flat.brms, "models/selfeffutil.gender.fourdemog.flat.brms.rds")
+
+## hypothesis test for selfeff decrease in control for poc ER 1.07 after 2024 data)
+brms::hypothesis(selfeffutil.gender.fourdemog.flat.brms, "GenderTwoCatFemaleOther < 0")
+## hypothesis test for selfeff increase in treatment for non poc ER 0.7 after 2024 data)
+brms::hypothesis(selfeffutil.gender.fourdemog.flat.brms, "treatmenttreatment > 0")
+## hypothesis test for selfeff increase for poc with treatment ER 0.85 after 2024 data)
+brms::hypothesis(selfeffutil.gender.fourdemog.flat.brms, "treatmenttreatment:GenderTwoCatFemaleOther > 0")
+
+
+# self efficacy - cost
+selfeffcost.gender.fourdemog.flat.brms <- brms::brm(formula = SelfEff_cost_sum_change ~ 
+                    SelfEff_cost_sum_pre + Course + LowIncome + URM + FirstGen + treatment*GenderTwoCat,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_flatpriors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# selfeffcost.gender.fourdemog.flat.brms <- readRDS("models/selfeffcost.gender.fourdemog.flat.brms.rds")
+summary(selfeffcost.gender.fourdemog.flat.brms)
+write_rds(selfeffcost.gender.fourdemog.flat.brms, "models/selfeffcost.gender.fourdemog.flat.brms.rds")
+
+## hypothesis test for selfeff increase in control for poc ER 13.39 after 2024 data) - opposite from expectation
+brms::hypothesis(selfeffcost.gender.fourdemog.flat.brms, "GenderTwoCatFemaleOther > 0")
+## hypothesis test for selfeff increase in treatment for non poc ER 3.23 after 2024 data)
+brms::hypothesis(selfeffcost.gender.fourdemog.flat.brms, "treatmenttreatment > 0")
+## hypothesis test for selfeff decrease for poc with treatment ER 5.81 after 2024 data) - opposite from expectation
+brms::hypothesis(selfeffcost.gender.fourdemog.flat.brms, "treatmenttreatment:GenderTwoCatFemaleOther < 0")
+
+########################
+
+# instrumental support seeking change differences between income groups bayes mod
+copeinstrum.gender.fourdemog.flat.brms <- brms::brm(formula = CopeInstrum_sum_change ~ 
+                    CopeInstrum_sum_pre + Course + LowIncome + URM + FirstGen + treatment*GenderTwoCat,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_flatpriors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# copeinstrum.gender.fourdemog.flat.brms <- readRDS("models/copeinstrum.gender.fourdemog.flat.brms.rds")
+summary(copeinstrum.gender.fourdemog.flat.brms)
+write_rds(copeinstrum.gender.fourdemog.flat.brms, "models/copeinstrum.gender.fourdemog.flat.brms.rds")
+
+## hypothesis test for copeinstrum increase in control for first gen ER 3.86 after 2024 - opposite from expectation
+brms::hypothesis(copeinstrum.gender.fourdemog.flat.brms, "GenderTwoCatFemaleOther > 0")
+## hypothesis test for belonging decrease in treatment for continuing gen ER 4.49 after 2024 - opposite from expectation
+brms::hypothesis(copeinstrum.gender.fourdemog.flat.brms, "treatmenttreatment < 0")
+## hypothesis test for belonging increase change for first gen with treatment ER 1.36 after 2024
+brms::hypothesis(copeinstrum.gender.fourdemog.flat.brms, "treatmenttreatment:GenderTwoCatFemaleOther > 0")
+```
+
+
+### bayes flat test mods for effect of treatment on grade across groups - initial grade
+```{r}
+# grade differences between income groups bayes mod
+grade.income.fourdemog.flat.brms <- brms::brm(formula = TotalPercent_init ~ 
+                    Course + URM + FirstGen + GenderTwoCat + LowIncome*treatment,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_flatpriors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# grade.income.fourdemog.flat.brms <- readRDS("models/grade.income.fourdemog.flat.brms.toF2024.rds")
+summary(grade.income.fourdemog.flat.brms)
+write_rds(grade.income.fourdemog.flat.brms, "models/grade.income.fourdemog.flat.brms.toF2024.rds")
+
+## hypothesis test for lower grades in control for lowincome ER 469.59
+### strong evidence for lower grades for low income students in control
+brms::hypothesis(grade.income.fourdemog.flat.brms, "LowIncomeYes < 0")
+## hypothesis test for higher grades with treatment for mid/high income ER 0.91
+brms::hypothesis(grade.income.fourdemog.flat.brms, "treatmenttreatment > 0")
+## hypothesis test for higher grades for lowincome with treatment ER 0.75
+### evidence for lower grades for lowincome with treatment
+brms::hypothesis(grade.income.fourdemog.flat.brms, "LowIncomeYes:treatmenttreatment < 0")
+
+# grade differences between race groups bayes mod
+grade.poc.fourdemog.flat.brms <- brms::brm(formula = TotalPercent_init ~ 
+                    Course + LowIncome + FirstGen + GenderTwoCat + URM*treatment,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_flatpriors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# grade.poc.fourdemog.flat.brms <- readRDS("models/grade.poc.fourdemog.flat.brms.toF2024.rds")
+summary(grade.poc.fourdemog.flat.brms)
+write_rds(grade.poc.fourdemog.flat.brms, "models/grade.poc.fourdemog.flat.brms.toF2024.rds")
+
+## hypothesis test for lower grades in control for poc ER 73.07
+### strong evidence for lower grades for poc income students in control
+brms::hypothesis(grade.poc.fourdemog.flat.brms, "URMYes < 0")
+## hypothesis test for lower grades with treatment for non poc ER 53.05 - opposite from expectation
+brms::hypothesis(grade.poc.fourdemog.flat.brms, "treatmenttreatment < 0")
+## hypothesis test for higher grades for poc with treatment ER 332.33
+### strong evidence for higher grades for poc with treatment
+brms::hypothesis(grade.poc.fourdemog.flat.brms, "URMYes:treatmenttreatment > 0")
+
+
+# grade differences between first/continuing gen groups bayes mod
+grade.gen.fourdemog.flat.brms <- brms::brm(formula = TotalPercent_init ~ 
+                    Course + LowIncome + URM + GenderTwoCat + FirstGen*treatment,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_flatpriors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# grade.gen.fourdemog.flat.brms <- readRDS("models/grade.gen.fourdemog.flat.brms.toF2024.rds")
+summary(grade.gen.fourdemog.flat.brms)
+write_rds(grade.gen.fourdemog.flat.brms, "models/grade.gen.fourdemog.flat.brms.toF2024.rds")
+
+## hypothesis test for lower grades in control for first gen ER 3.99
+### evidence for lower grades in control for first gen
+brms::hypothesis(grade.gen.fourdemog.flat.brms, "FirstGenYes < 0")
+## hypothesis test for higher grades with treatment for continuing gen ER 0.47
+### evidence that lower grades in treatment for continuing gen
+brms::hypothesis(grade.gen.fourdemog.flat.brms, "treatmenttreatment > 0")
+## hypothesis test for higher grades for first gen with treatment ER 4.39
+brms::hypothesis(grade.gen.fourdemog.flat.brms, "FirstGenYes:treatmenttreatment > 0")
+
+
+# grade differences between gender groups bayes mod
+grade.gender.fourdemog.flat.brms <- brms::brm(formula = TotalPercent_init ~ 
+                    Course + LowIncome + URM + FirstGen + GenderTwoCat*treatment,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_flatpriors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# grade.gen.fourdemog.flat.brms <- readRDS("models/grade.gen.fourdemog.flat.brms.toF2024.rds")
+summary(grade.gender.fourdemog.flat.brms)
+write_rds(grade.gen.fourdemog.flat.brms, "models/grade.gen.fourdemog.flat.brms.toF2024.rds")
+
+## hypothesis test for lower grades in control for first gen ER 3.99
+### evidence for lower grades in control for first gen
+brms::hypothesis(grade.gender.fourdemog.flat.brms, "GenderTwoCatFemaleOther < 0")
+## hypothesis test for higher grades with treatment for continuing gen ER 0.47
+### evidence that lower grades in treatment for continuing gen
+brms::hypothesis(grade.gender.fourdemog.flat.brms, "treatmenttreatment > 0")
+## hypothesis test for higher grades for first gen with treatment ER 4.39
+brms::hypothesis(grade.gender.fourdemog.flat.brms, "GenderTwoCatFemaleOther:treatmenttreatment > 0")
+
+
+# overall grade differences between treatment/control - nothing going on
+grade.overall.flat.brms <- brms::brm(formula = TotalPercent_init ~ 
+                    Course + LowIncome + URM + FirstGen + GenderTwoCat + treatment,
+                  data = matched.allgroups.gender.dat,
+                  warmup = 1000,
+                  iter = 3000,
+                  seed=SEED, 
+                  prior = mod_flatpriors, 
+                  cores = 4,
+                  sample_prior=TRUE) ## need this to get Bayes factors
+# grade.overall.flat.brms <- readRDS("models/grade.overall.fourdemog.flat.brms.toF2024.rds")
+summary(grade.overall.flat.brms)
+write_rds(grade.overall.flat.brms, "models/grade.overall.fourdemog.flat.brms.toF2024.rds")
+
+
+## hypothesis test for overall effect of treatment ER 1.04
+brms::hypothesis(grade.overall.flat.brms, "treatmenttreatment > 0")
+```
+
+
+# compare informative vs flat models
+## all good
+```{r}
+# check income mods
+summary(fne.income.fourdemog.brms)
+summary(fne.income.fourdemog.flat.brms) ## okay
+
+summary(belong.income.fourdemog.brms)
+summary(belong.income.fourdemog.flat.brms) ## okay
+
+summary(selfeffint.income.fourdemog.brms)
+summary(selfeffint.income.fourdemog.flat.brms) ## okay
+
+summary(selfeffutil.income.fourdemog.brms)
+summary(selfeffutil.income.fourdemog.flat.brms) ## okay
+
+summary(selfeffcost.income.fourdemog.brms)
+summary(selfeffcost.income.fourdemog.flat.brms) ## okay
+
+summary(copeinstrum.income.fourdemog.brms)
+summary(copeinstrum.income.fourdemog.flat.brms) ## okay
+```
+
+```{r}
+# check poc mods
+summary(fne.poc.fourdemog.brms)
+summary(fne.poc.fourdemog.flat.brms) ## okay
+
+summary(belong.poc.fourdemog.brms)
+summary(belong.poc.fourdemog.flat.brms) ## okay
+
+summary(selfeffint.urm.fourdemog.brms)
+summary(selfeffint.urm.fourdemog.flat.brms) ## okay
+
+summary(selfeffutil.urm.fourdemog.brms)
+summary(selfeffutil.urm.fourdemog.flat.brms) ## okay
+
+summary(selfeffcost.urm.fourdemog.brms)
+summary(selfeffcost.urm.fourdemog.flat.brms) ## okay
+
+summary(copeinstrum.poc.fourdemog.brms)
+summary(copeinstrum.poc.fourdemog.flat.brms) ## okay
+
+```
+
+```{r}
+# check firstgen mods
+summary(fne.gen.fourdemog.brms)
+summary(fne.gen.fourdemog.flat.brms) ## okay
+
+summary(belong.gen.fourdemog.brms)
+summary(belong.gen.fourdemog.flat.brms) ## okay
+
+summary(selfeffint.gen.fourdemog.brms)
+summary(selfeffint.gen.fourdemog.flat.brms) ## okay
+
+summary(selfeffutil.gen.fourdemog.brms)
+summary(selfeffutil.gen.fourdemog.flat.brms) ## okay
+
+summary(selfeffcost.gen.fourdemog.brms)
+summary(selfeffcost.gen.fourdemog.flat.brms) ## okay
+
+summary(copeinstrum.gen.fourdemog.brms)
+summary(copeinstrum.gen.fourdemog.flat.brms) ## okay
+```
+
+```{r}
+# check gender mods
+summary(fne.gender.fourdemog.brms)
+summary(fne.gender.fourdemog.flat.brms) ## a little funky - one coef is higher by 1 unit
+
+summary(belong.gender.fourdemog.brms)
+summary(belong.gender.fourdemog.flat.brms) ## okay
+
+summary(selfeffint.gender.fourdemog.brms)
+summary(selfeffint.gender.fourdemog.flat.brms) ## okay
+
+summary(selfeffutil.gender.fourdemog.brms)
+summary(selfeffutil.gender.fourdemog.flat.brms) ## okay
+
+summary(selfeffcost.gender.fourdemog.brms)
+summary(selfeffcost.gender.fourdemog.flat.brms) ## okay
+
+summary(copeinstrum.gender.fourdemog.brms)
+summary(copeinstrum.gender.fourdemog.flat.brms) ## okay
+```
+
+```{r}
+# check grades mods
+summary(grade.income.fourdemog.brms)
+summary(grade.income.fourdemog.flat.brms) ## okay
+
+summary(grade.poc.fourdemog.brms)
+summary(grade.poc.fourdemog.flat.brms) ## okay
+
+summary(grade.gen.fourdemog.brms)
+summary(grade.gen.fourdemog.flat.brms) ## okay
+
+summary(grade.gender.fourdemog.brms)
+summary(grade.gender.fourdemog.flat.brms) ## okay
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
